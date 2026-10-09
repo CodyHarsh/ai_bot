@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+anthropic
+faster-whisper
+edge-tts
+numpy
