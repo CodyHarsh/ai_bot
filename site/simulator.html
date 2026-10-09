@@ -140,6 +140,16 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 @media(max-width:620px){.pb-price{text-align:left}}
 .pb-price b{display:block;font-size:19px;font-weight:700}
 .pb-price span{font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+.tst{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:10px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px}
+.tst input{width:20px;height:20px;margin-top:3px;accent-color:var(--good)}
+.tst.pass{border-color:var(--good)}
+.tst h3{margin-bottom:2px}
+.tst .tag{font:500 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.tst .blk{margin-top:8px}
+.tst .blk>b{font:500 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:2px}
+.tst .do>b{color:var(--accent)}.tst .ex>b{color:var(--good)}.tst .no>b{color:var(--warn)}
+.tst ul{margin:2px 0 0;padding-left:18px}
+.tst pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:12px/1.5 var(--mono);overflow:auto;margin:6px 0 0}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 </style>
 
@@ -154,6 +164,7 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <button role="tab" data-t="wire" aria-selected="false">Wiring</button>
     <button role="tab" data-t="3d" aria-selected="false">3D Build</button>
     <button role="tab" data-t="steps" aria-selected="false">Build steps</button>
+    <button role="tab" data-t="test" aria-selected="false">Test run</button>
     <button role="tab" data-t="code" aria-selected="false">Code</button>
     <button role="tab" data-t="llm" aria-selected="false">How the AI works</button>
   </nav>
@@ -290,6 +301,14 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <div id="phases"></div>
     <h2 style="margin-top:34px">If something goes wrong</h2>
     <div id="trouble"></div>
+  </section>
+
+  <!-- TEST RUN -->
+  <section id="p-test" hidden>
+    <div class="hdr"><div><h2>Test run</h2>
+    <p class="sub">Use this once the wiring is done. Go in order: each test proves one part, so a failure tells you exactly where to look. Tick a test when it passes.</p></div>
+    <div class="card" style="padding:10px 16px"><div class="lbl" style="margin:0">Passed</div><div id="testcount" style="font:700 22px var(--display)">0 / 0</div></div></div>
+    <div id="tests"></div>
   </section>
 
   <!-- CODE -->
@@ -1145,7 +1164,7 @@ const MODES=['Buddy','Study','Mood','Sleep'];
 /* ---------- tabs ---------- */
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));
-  ['sim','emo','wire','3d','steps','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
+  ['sim','emo','wire','3d','steps','test','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
 });
 try{ if(window.mermaid) mermaid.initialize({startOnLoad:true,theme:'neutral'}); }catch(e){}
 
@@ -1480,6 +1499,67 @@ const TROUBLE=[
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
 ];
 $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${t[1]}</p></details>`).join('');
+
+
+/* ---------- test run ---------- */
+const TESTS=[
+ {n:'0 · Before you plug anything in',tag:'code only, no wiring',
+  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code>, <code>test_mic.ino</code> and <code>test_speaker.ino</code>.','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
+  e:['Each sketch ends with "Done compiling".','The server prints "Loading speech-to-text model" and then keeps running.','<code>http://localhost:8000</code> loads and answers when you type "hello".'],
+  f:['Compile error: copy the red text. <code>ESP_I2S.h</code> missing means the core is not 3.x.','No sound from the server page: check the Mac volume, and that <code>ffmpeg -version</code> works.']},
+ {n:'1 · Board and upload',tag:'USB only',
+  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>FACE_TEST_ONLY</code> to <code>1</code>, click Upload.'],
+  e:['"Hard resetting via RTS pin… Done uploading." appears.'],
+  f:['Stuck on "Connecting...": hold the <b>BOOT</b> button until it starts writing.','No port: try another cable, install the CP210x or CH340 driver, replug.','"Resource busy": close the Serial Monitor and any second Arduino window.']},
+ {n:'2 · OLED faces',tag:'face test mode',
+  d:['Open Tools &gt; Serial Monitor at <b>115200</b>.','Press <code>n</code> then Enter a few times. Press <code>k</code> then Enter for the talking mouth.'],
+  e:['A star-eyed face first, then a new emotion every 2.5 seconds.','The face blinks, bobs slightly, and the mouth moves after <code>k</code>.','Serial prints <code>face: happy</code>, <code>face: excited</code> and so on.'],
+  f:['Black screen: swap SDA and SCL, recheck 3V3 and GND.','Serial says "OLED init failed": the address may be 0x3C or 0x3D, and the wires may be loose.']},
+ {n:'3 · Microphone',tag:'test_mic.ino',
+  d:['Upload <code>test_mic.ino</code> and open the Serial Monitor at 115200.','Stay quiet for 2 seconds, then clap, then talk.'],
+  e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: later lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code>.']},
+ {n:'4 · Speaker',tag:'test_speaker.ino',
+  d:['Upload <code>test_speaker.ino</code>.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
+  e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],
+  f:['Silence: check VIN to 5V (needs USB power), DIN to GPIO22, BCLK to GPIO14, LRC to GPIO25.','Distorted: lower <code>VOLUME</code> in the sketch.','Hum with no beep: the speaker wires are on GND.']},
+ {n:'5 · Can the ESP32 reach your Mac',tag:'network',
+  d:['On your phone, on the same WiFi as the Mac, open <code>http://YOUR-MAC-IP:8000</code>.','If it does not load: macOS Firewall, allow Python. System Settings &gt; Privacy &amp; Security &gt; Local Network, allow Terminal.'],
+  e:['The Pip server page loads on the phone.'],
+  f:['Use your phone hotspot for both the Mac and the ESP32 if venue WiFi blocks devices from each other.']},
+ {n:'6 · First conversation',tag:'full bot',
+  d:['In <code>ai_bot.ino</code> set <code>FACE_TEST_ONLY</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
+  e:['<pre>ESP32 IP: 192.168.x.x\nNoise floor 62, speech threshold 187\nSent 2100 ms of audio\nServer: HTTP 200, emotion=surprised, text=...</pre>','The face goes listening, then thinking, then the speaker answers with the mouth moving, and the emotion face stays for 4 seconds.','The server terminal prints <code>heard: ...</code> and the reply.'],
+  f:['Never wakes: lower <code>MIC_SHIFT</code> by 1 and restart.','Wakes on its own: raise <code>MIC_SHIFT</code> by 1, restart in a quiet room.','"Cannot reach server": recheck <code>SERVER_HOST</code> and test 5.','Server hears nothing (<code>heard: \'\'</code>): speak closer, use <code>WHISPER_MODEL=small.en</code>.']},
+ {n:'7 · Modes',tag:'full bot',
+  d:['Say "study mode", then ask "give me a study tip".','Say "mood mode", then "I had a rough day".','Say "sleep mode", then "say goodnight".','You can also press <code>1</code> to <code>4</code> in the Serial Monitor.'],
+  e:['It confirms each mode out loud.','Study answers are short and practical, mood answers show a sad or shy face, sleep answers are soft and sleepy.'],
+  f:['Mode did not change: the server console should print the new mode. Restart the server if it does not.']},
+ {n:'8 · Emotions',tag:'full bot',
+  d:['Say: "I got the job!" (excited). "You look angry" (pout). "I love you" (love). "Tell me a joke" (silly). "Goodnight" (sleepy).'],
+  e:['Each reply shows a matching face. The face looks cute and changes with the reply.'],
+  f:['Always happy: the reply JSON may have failed. Check the server console for the emotion value.']},
+ {n:'9 · Demo script',tag:'final check',
+  d:['Run these five lines in a row: "Hello Pip", "Tell me a fun fact", "study mode, give me a tip", "I had a rough day", "Say goodnight".','Leave it quiet for 60 seconds.'],
+  e:['No crashes, replies within a few seconds, and after 60 quiet seconds the face falls asleep.','Speaking wakes it again.'],
+  f:['Slow answers: <code>WHISPER_MODEL=tiny.en</code> and keep the Mac plugged in.']}
+];
+(function(){
+  let st={};try{st=JSON.parse(localStorage.getItem('pipTests')||'{}')}catch(e){}
+  const host=$('#tests');
+  function count(){$('#testcount').textContent=Object.values(st).filter(Boolean).length+' / '+TESTS.length}
+  TESTS.forEach((t,i)=>{
+    const d=document.createElement('div');d.className='tst';
+    d.innerHTML=`<input type="checkbox" id="t${i}" aria-label="Passed: ${t.n}"><div><h3>${t.n}</h3><div class="tag">${t.tag}</div>
+      <div class="blk do"><b>Do</b><ul>${t.d.map(x=>'<li>'+x+'</li>').join('')}</ul></div>
+      <div class="blk ex"><b>You should see</b><ul>${t.e.map(x=>'<li>'+x+'</li>').join('')}</ul></div>
+      <div class="blk no"><b>If not</b><ul>${t.f.map(x=>'<li>'+x+'</li>').join('')}</ul></div></div>`;
+    const cb=d.querySelector('input');cb.checked=!!st[i];d.classList.toggle('pass',cb.checked);
+    cb.onchange=()=>{st[i]=cb.checked;d.classList.toggle('pass',cb.checked);count();try{localStorage.setItem('pipTests',JSON.stringify(st))}catch(e){}};
+    host.appendChild(d);
+  });
+  count();
+})();
 
 /* ---------- code viewer ---------- */
 const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware (main sketch)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
