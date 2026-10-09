@@ -81,6 +81,12 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 .gal .bezel{padding:6px}
 .gal h3{margin-top:8px;font-size:15px}
 .gal p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}
+#threeWrap{position:relative;height:clamp(380px,64vh,600px);overflow:hidden;padding:0}
+#threeWrap canvas{width:100%!important;height:100%!important;image-rendering:auto;border-radius:10px}
+.wchip{display:inline-flex;gap:6px;align-items:center;font:12px var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:3px 10px;margin:0 6px 6px 0}
+.wchip i,.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
+.wchip i{margin:0}
+.ref{width:100%;background:#f0f0f0;border-radius:8px;display:block}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 </style>
 
@@ -93,6 +99,7 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <button role="tab" data-t="sim" aria-selected="true">Simulator</button>
     <button role="tab" data-t="emo" aria-selected="false">Emotions</button>
     <button role="tab" data-t="wire" aria-selected="false">Wiring</button>
+    <button role="tab" data-t="3d" aria-selected="false">3D Build</button>
     <button role="tab" data-t="steps" aria-selected="false">Build steps</button>
     <button role="tab" data-t="code" aria-selected="false">Code</button>
     <button role="tab" data-t="llm" aria-selected="false">How the AI works</button>
@@ -135,6 +142,7 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
   <!-- WIRING -->
   <section id="p-wire" hidden>
     <h2>Wiring</h2>
+    <div class="card" style="margin-bottom:16px"><h3>Your Cirkit circuit</h3><img class="ref" src="cirkit_circuit.svg" alt="Cirkit Designer circuit: OLED on top, ESP32 in the middle, INMP441 microphone on the left, MAX98357A amplifier and speaker on the right"></div>
     <div class="card scroll"><svg id="wsvg" viewBox="0 0 900 650" width="900" role="img" aria-label="Wiring diagram" style="max-width:none"></svg></div>
     <div class="card scroll" style="margin-top:16px">
       <table>
@@ -155,6 +163,49 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
       </table>
     </div>
     <p class="sub" style="margin-top:12px">Leave the MAX98357A <code>SD</code> and <code>GAIN</code> pins unconnected. Silkscreen order on the modules differs between sellers, so match pin names, not positions. Power the ESP32 over USB while testing.</p>
+  </section>
+
+
+  <!-- 3D BUILD -->
+  <section id="p-3d" hidden>
+    <h2>3D build</h2>
+    <p class="sub">Laid out like your Cirkit project: OLED at the back, ESP32 in the middle, microphone on the left, amplifier and speaker on the right. Drag to rotate, scroll to zoom. Step through the build, then press Talk to watch signals travel through the wires.</p>
+    <div id="threeWrap" class="card"></div>
+    <div class="grid" style="margin-top:14px">
+      <div class="card">
+        <div class="lbl" style="margin-top:0">Build steps</div>
+        <div class="row" style="flex-wrap:wrap;align-items:center;margin-bottom:10px">
+          <button class="btn2" id="prev3">Back</button>
+          <div class="chips" id="steps3" style="margin:0"></div>
+          <button class="btn2" id="next3">Next</button>
+          <button class="btn2" id="auto3">Auto build</button>
+          <button class="btn2" id="reset3">Reset</button>
+        </div>
+        <h3 id="cap3t"></h3>
+        <p id="cap3d" style="margin:0 0 8px"></p>
+        <div id="cap3w"></div>
+        <div class="lbl">Camera</div>
+        <div class="chips">
+          <button class="chip" id="v-iso">Angled</button><button class="chip" id="v-top">Top (like Cirkit)</button><button class="chip" id="v-front">Front</button>
+        </div>
+        <label style="font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center;margin-bottom:6px"><input type="checkbox" id="rot3"> Auto-rotate</label>
+        <label style="font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center"><input type="checkbox" id="pins3" checked> Pin labels</label>
+      </div>
+      <div class="card">
+        <div class="lbl" style="margin-top:0">Run the simulation</div>
+        <form class="row" id="f3"><input type="text" id="q3" value="Tell me a fun fact" autocomplete="off" aria-label="What you say to the bot"><button class="go" id="talk3" type="submit">Talk</button></form>
+        <div class="chips" style="margin-top:8px" id="quick3"></div>
+        <div class="lbl">Now happening</div>
+        <div id="status3" style="font:500 14px var(--mono)">Idle</div>
+        <div class="lbl">Parts</div>
+        <div class="chips" id="parts3"></div>
+        <p id="info3" class="sub" style="margin:0"></p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="lbl" style="margin-top:0">Wires (same colours as your Cirkit project). Click one to isolate it.</div>
+      <div class="chips" id="legend3" style="margin:0"></div>
+    </div>
   </section>
 
   <!-- STEPS -->
@@ -247,7 +298,7 @@ const MODES=['Buddy','Study','Mood','Sleep'];
 /* ---------- tabs ---------- */
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));
-  ['sim','emo','wire','steps','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
+  ['sim','emo','wire','3d','steps','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
 });
 try{ if(window.mermaid) mermaid.initialize({startOnLoad:true,theme:'neutral'}); }catch(e){}
 
@@ -361,8 +412,9 @@ function drawWave(now){
 /* ---------- pipeline strip ---------- */
 const STAGES=[['mic','INMP441','GPIO33'],['vad','Voice detect','ESP32'],['up','WiFi up','raw audio'],['stt','Whisper','speech to text'],['llm','Claude','emotion + reply'],['tts','edge-tts','cute voice'],['down','WiFi down','raw audio'],['amp','MAX98357A','GPIO22 + speaker'],['oled','OLED','face']];
 $('#pipe').innerHTML=STAGES.map(s=>`<div class="stage" id="st-${s[0]}">${s[1]}<small>${s[2]}</small></div>`).join('');
-function stage(id,on){const e=$('#st-'+id);if(!e)return;e.classList.toggle('on',on);if(!on)e.classList.add('done')}
-function clearStages(){document.querySelectorAll('.stage').forEach(e=>e.classList.remove('on','done'))}
+const ACT={};
+function stage(id,on){ACT[id]=on;const e=$('#st-'+id);if(!e)return;e.classList.toggle('on',on);if(!on)e.classList.add('done')}
+function clearStages(){for(const k in ACT)ACT[k]=false;document.querySelectorAll('.stage').forEach(e=>e.classList.remove('on','done'))}
 
 /* ---------- serial log ---------- */
 const logEl=$('#log');
@@ -465,15 +517,15 @@ setInterval(()=>{ if($('#p-emo').hidden)return; const t=performance.now();
   h+=pins(190,'end',esp)+pins(560,'start',mic)+pins(560,'start',amp)+pins(560,'start',oled);
   // pin labels for the parts sit inside the boxes, so move them right of the pin dot
   const nets=[
-    ['3V3','#e5484d',esp['3V3'],215,[mic.VDD,oled.VDD]],
-    ['5V','#f97316',esp['5V'],235,[amp.VIN]],
-    ['GND','#7a8a83',esp.GND,255,[mic.GND,mic['L/R'],amp.GND,oled.GND]],
-    ['BCLK','#a855f7',esp.GPIO14,285,[mic.SCK,amp.BCLK]],
-    ['WS','#06b6d4',esp.GPIO25,305,[mic.WS,amp.LRC]],
-    ['MIC','#22a06b',esp.GPIO33,325,[mic.SD]],
-    ['SPK','#eab308',esp.GPIO22,345,[amp.DIN]],
-    ['SDA','#3b82f6',esp.GPIO21,365,[oled.SDA]],
-    ['SCL','#ec4899',esp.GPIO19,385,[oled.SCK]]
+    ['3V3','#a0522d',esp['3V3'],215,[mic.VDD,oled.VDD]],
+    ['5V','#ff7eb3',esp['5V'],235,[amp.VIN]],
+    ['GND','#ff12b4',esp.GND,255,[mic.GND,mic['L/R'],amp.GND,oled.GND]],
+    ['BCLK','#0e8f9c',esp.GPIO14,285,[mic.SCK,amp.BCLK]],
+    ['WS','#6b3a3a',esp.GPIO25,305,[mic.WS,amp.LRC]],
+    ['MIC','#00c8dc',esp.GPIO33,325,[mic.SD]],
+    ['SPK','#6ab04c',esp.GPIO22,345,[amp.DIN]],
+    ['SDA','#a5a5f5',esp.GPIO21,365,[oled.SDA]],
+    ['SCL','#ff8c00',esp.GPIO19,385,[oled.SCK]]
   ];
   nets.forEach(([n,c,y0,x,ys])=>{
     const all=[y0,...ys],lo=Math.min(...all),hi=Math.max(...all);
@@ -482,7 +534,7 @@ setInterval(()=>{ if($('#p-emo').hidden)return; const t=performance.now();
   });
   // speaker
   h+=`<circle cx="760" cy="335" r="4" fill="var(--ink)"/><text x="715" y="318" class="dim">VO+</text><circle cx="760" cy="385" r="4" fill="var(--ink)"/><text x="715" y="378" class="dim">VO−</text>`;
-  h+=`<path class="wire" stroke="#f97316" d="M760 335H810"/><path class="wire" stroke="#7a8a83" d="M760 385H810"/>`;
+  h+=`<path class="wire" stroke="#7cfc00" d="M760 335H810"/><path class="wire" stroke="#9b8cf0" d="M760 385H810"/>`;
   h+=`<text x="816" y="345" class="dim">+</text><text x="816" y="395" class="dim">−</text>`;
   h+=`<text x="580" y="262" class="dim">L/R tied to GND = left channel</text>`;
   svg.innerHTML=h;
@@ -588,4 +640,9 @@ $('#copy').onclick=async()=>{
   try{await navigator.clipboard.writeText(t);$('#copied').textContent='Copied.'}
   catch(e){const r=document.createRange();r.selectNodeContents($('#src'));const s=getSelection();s.removeAllRanges();s.addRange(r);$('#copied').textContent='Selected. Press Ctrl+C.'}
 };
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/*__SCENE3D__*/
 </script>

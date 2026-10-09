@@ -11,5 +11,6 @@ files = {
 }
 for key, path in files.items():
     page = page.replace(key, html.escape((root / path).read_text(), quote=False))
+page = page.replace("/*__SCENE3D__*/", (root / "site" / "scene3d.js").read_text())
 (root / "site" / "simulator.html").write_text(page)
 print("built", len(page), "bytes")
