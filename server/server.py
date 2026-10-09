@@ -87,6 +87,7 @@ PRESETS = {  # base url, key env var(s), default model, model env var
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
 COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
 VOICE = os.getenv("TTS_VOICE", "en-US-AnaNeural")      # cute child-like voice
+PLAY_ON = os.getenv("PLAY_ON", "laptop").lower()      # where the voice comes out: laptop (default), device (ESP32 speaker) or both
 TTS_GAIN = os.getenv("TTS_GAIN", "2.0")                # voice loudness: 1.0 = normal, 2.0 = twice as loud (a limiter prevents clipping)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")  # tiny.en is faster, small.en is more accurate
 SAMPLE_RATE = 16000
@@ -554,6 +555,55 @@ async def respond(text: str) -> dict:
     return reply
 
 
+
+_player = {"proc": None}
+
+
+def find_player():
+    for cmd in (["afplay"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"], ["paplay"], ["aplay", "-q"]):
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+pl = find_player()
+log.info("voice comes out of: %s (PLAY_ON=%s, player: %s). Test it: open http://localhost:8000/api/laptop-test", "the LAPTOP speakers" if PLAY_ON == "laptop" else "the ESP32 speaker" if PLAY_ON == "device" else "laptop and ESP32", PLAY_ON, pl[0] if pl else "NONE FOUND")
+
+
+async def play_on_laptop(pcm: bytes):
+    """Plays the voice on THIS computer's speakers (afplay on a Mac). Runs in the background; a new reply replaces an old one."""
+    cmd = find_player()
+    if not cmd:
+        log_tts.error("no audio player found on this computer (a Mac has afplay built in; elsewhere install ffmpeg/ffplay). The voice cannot be played here")
+        return
+    if not pcm:
+        return
+    import tempfile
+    f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    f.write(to_wav(pcm))
+    f.close()
+    old = _player["proc"]
+    if old and old.returncode is None:
+        old.kill()
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, f.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    except Exception as e:
+        log_tts.error("could not start %s: %s", cmd[0], e)
+        return
+    _player["proc"] = proc
+    log_tts.info("playing the voice on the laptop speakers with %s (%d ms)", cmd[0], len(pcm) // 32)
+
+    async def done():
+        err = (await proc.stderr.read()).decode(errors="ignore").strip()
+        await proc.wait()
+        if proc.returncode not in (0, -9) or err:
+            log_tts.error("%s finished with code %s: %s", cmd[0], proc.returncode, err[:200])
+        try:
+            os.unlink(f.name)
+        except OSError:
+            pass
+    asyncio.create_task(done())
+
+
 @app.post("/talk")
 async def talk(request: Request):
     pcm = await request.body()
@@ -595,7 +645,10 @@ async def talk(request: Request):
                      "emotion": reply["emotion"], "provider": reply.get("provider", "-"), "reply": reply["text"],
                      "mic": mic, "speaker": levels(audio),
                      "ms": {"stt": int((t1 - t0) * 1000), "llm": int((t2 - t1) * 1000), "tts": int((t3 - t2) * 1000)}}
+    if audio and PLAY_ON in ("laptop", "both"):
+        await play_on_laptop(audio)
     headers = {
+        "X-Playback": "laptop" if PLAY_ON == "laptop" else "device",
         "X-Emotion": reply["emotion"],
         "X-Text": reply["text"].encode("ascii", "ignore").decode()[:200],
         "X-Mode": MODES[state["mode"]],
@@ -660,6 +713,15 @@ async def devlog(request: Request):
         if line.strip():
             (log_esp.error if " ERR " in line else log_esp.info)(line.strip())
     return PlainTextResponse("ok\n")
+
+
+@app.get("/api/laptop-test")  # plays a sentence on the laptop speakers: proves the Mac side works
+async def laptop_test(text: str = "Hello! I am Pip. This is the laptop speaker."):
+    audio = await speak(text[:200])
+    if not audio:
+        return PlainTextResponse("the server could not make the voice, see the server terminal\n", status_code=500)
+    await play_on_laptop(audio)
+    return {"playing": True, "player": (find_player() or ["none"])[0], "play_on": PLAY_ON}
 
 
 @app.get("/api/say")  # raw voice for the ESP32 speaker test sketch

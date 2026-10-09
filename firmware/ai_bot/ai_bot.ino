@@ -510,6 +510,7 @@ void receiveAndPlay(WiFiClient& c) {
   String status = c.readStringUntil('\n');
   int code = status.substring(9, 12).toInt();
   long remaining = -1; String emoStr = "happy", text = "", provider = "-", tone = "-";
+  bool laptopPlay = false;
   while (true) {
     String l = c.readStringUntil('\n');
     if (l.length() <= 1) break;
@@ -520,6 +521,7 @@ void receiveAndPlay(WiFiClient& c) {
     else if (low.startsWith("x-text:")) { text = l.substring(7); text.trim(); }
     else if (low.startsWith("x-provider:")) { provider = l.substring(11); provider.trim(); }
     else if (low.startsWith("x-tone:")) { tone = l.substring(7); tone.trim(); }
+    else if (low.startsWith("x-playback:")) laptopPlay = low.indexOf("laptop") > 0;
   }
   lastCode = code;
   LOGI("NET", "server answered HTTP %d after %lu ms: tone=%s face=%s brain=%s", code, waited, tone.c_str(), emoStr.c_str(), provider.c_str());
@@ -531,7 +533,7 @@ void receiveAndPlay(WiFiClient& c) {
     return;
   }
   if (remaining == 0) LOGE("PLAY", "the server sent an EMPTY voice (Content-Length 0), so the speaker has nothing to play. The problem is on the Mac: check ffmpeg and the voice service in the server terminal, or press Run self-test on the dashboard");
-  else LOGI("PLAY", "voice incoming: %ld bytes (about %ld ms)", remaining, remaining / 32);
+  else LOGI("PLAY", "voice incoming: %ld bytes (about %ld ms)%s", remaining, remaining / 32, laptopPlay ? ". It plays on the LAPTOP speakers; this board only shows the face" : "");
 
   setFace(emotionFromName(emoStr));
   talking = true;
@@ -564,7 +566,9 @@ void receiveAndPlay(WiFiClient& c) {
       if (abs(v) > peakOut) peakOut = abs(v);
       out[2 * i] = out[2 * i + 1] = v << 16;
     }
-    size_t w = i2s.write((uint8_t*)out, ns * 8);
+    size_t w = ns * 8;
+    if (laptopPlay) delay(ns / 16);   // the laptop plays the sound: just keep the face moving in time with it
+    else w = i2s.write((uint8_t*)out, ns * 8);
     bytesOut += w;
     if (w != (size_t)(ns * 8)) shortWrites++;
     talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
