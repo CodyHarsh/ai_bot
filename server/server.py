@@ -252,6 +252,12 @@ def get_whisper():
 
 if STT_PROVIDER == "whisper":
     get_whisper()
+    try:   # warm-up: the very first recording would otherwise be several seconds slower
+        _s, _ = get_whisper().transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32) + 0.001, language="en", beam_size=1)
+        list(_s)
+        log.info("speech-to-text warmed up: the first recording will be fast")
+    except Exception as e:
+        log.warning("warm-up skipped (%s)", e)
 llm = None
 if "anthropic" in CHAIN:
     try:
@@ -804,7 +810,7 @@ async def ding():
     env = np.minimum(1.0, np.minimum(x / 0.01, (0.16 - x) / 0.04))
     wave_ = (np.sin(2 * np.pi * 988 * x) + 0.5 * np.sin(2 * np.pi * 1480 * x)) / 1.5 * env * 0.6
     await play_on_laptop((wave_ * 32767).astype(np.int16).tobytes())
-    await asyncio.sleep(0.4)   # the board waits for the beep to finish before it records
+    await asyncio.sleep(0.28)   # the board waits for the beep to finish before it records
     return {"ok": True}
 
 

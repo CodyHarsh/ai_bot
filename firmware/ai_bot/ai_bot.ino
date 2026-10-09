@@ -61,7 +61,7 @@ const int   SERVER_PORT = 8000;
 #define FRAME 320                 // 20 ms of audio
 #define PRE_FRAMES 4              // 80 ms of audio kept from before speech was detected
 #define MAX_FRAMES 300            // max 6 s per utterance
-#define SILENCE_FRAMES 36         // ~720 ms of quiet ends the utterance (quiet = well below your loudest moment)
+#define SILENCE_FRAMES 25         // ~500 ms of quiet ends the utterance (lower = faster answers, but may cut you off between words) (quiet = well below your loudest moment)
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 I2SClass i2s;
@@ -653,7 +653,7 @@ void conversation() {
   if (manual) {
     showCue();                                                 // OLED: SPEAK NOW
     dingServer();                                              // laptop: a short beep
-    for (int i = 0; i < 14; i++) readMono(frameBuf, FRAME);    // drop the audio captured during the beep (stops it being recorded)
+    for (int i = 0; i < 10; i++) readMono(frameBuf, FRAME);    // drop the audio captured during the beep (stops it being recorded)
   }
   WiFiClient c;
   c.setNoDelay(true);
