@@ -48,11 +48,16 @@ RULES = (
     "plain words with no emojis, no markdown. Pick the emotion that matches your reply."
 )
 
-state = {"mode": 0, "history": [], "log": []}
+state = {"mode": 0, "history": [], "log": [], "warned": False}
+OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
 print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
 stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-llm = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+try:
+    llm = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+except Exception as e:  # no key set: still run, with simple built-in replies
+    print("No Anthropic key found, running in offline mode:", e)
+    llm = None
 app = FastAPI()
 
 
@@ -73,14 +78,54 @@ def maybe_switch_mode(text: str) -> bool:
     return False
 
 
+OFFLINE_RULES = [
+    (r"angry|mad|grumpy", "pout", "Hmph! I am not grumpy. Okay, maybe a little."),
+    (r"rough|bad day|sad|lonely|cry", "sad", "I am here with you. Do you want to tell me more?"),
+    (r"anxious|worried|stress|scared", "shy", "Breathe in slowly. I will stay right here."),
+    (r"job|won|passed|promotion|good news", "excited", "No way! That is amazing! I am so proud of you!"),
+    (r"love|thank", "love", "Aww, you are my favourite human in the whole world!"),
+    (r"goodnight|good night|tired|sleep", "sleepy", "Sweet dreams. Lights out in three, two, one."),
+    (r"morning", "happy", "Good morning! Let us make today a good one."),
+    (r"focus|distract", "thinking", "Try twenty five minutes of focus, then a five minute break."),
+    (r"study|tip|exam", "thinking", "Explain it out loud in one sentence. The gaps will show."),
+    (r"joke|funny", "silly", "Why did the robot go to school? To improve its byte!"),
+    (r"who are you|your name", "wink", "I am Pip, a tiny robot with big feelings."),
+    (r"fact", "surprised", "Octopuses have three hearts. Is that not wild?"),
+    (r"hello|hi pip|hey", "happy", "Hi hi! I am so happy you are here!"),
+]
+OFFLINE_FALLBACK = [("happy", "Ask me anything. I am all ears!"), ("thinking", "Good question. Let us break it into small parts."),
+                    ("love", "Tell me more. I am listening."), ("sleepy", "Mmm. Soft thoughts only now.")]
+
+
+def offline_reply(text: str) -> dict:
+    """Simple built-in replies, used when the LLM is unavailable."""
+    t = text.lower()
+    for pattern, emotion, reply in OFFLINE_RULES:
+        if re.search(pattern, t):
+            return {"emotion": emotion, "text": reply}
+    emotion, reply = OFFLINE_FALLBACK[state["mode"]]
+    return {"emotion": emotion, "text": reply}
+
+
 def think(text: str) -> dict:
+    if OFFLINE or llm is None:
+        return offline_reply(text)
     messages = state["history"][-8:] + [{"role": "user", "content": text}]
-    resp = llm.messages.create(
-        model=LLM_MODEL,
-        max_tokens=200,
-        system=MODE_PROMPTS[state["mode"]] + RULES,
-        messages=messages,
-    )
+    try:
+        resp = llm.messages.create(
+            model=LLM_MODEL,
+            max_tokens=200,
+            system=MODE_PROMPTS[state["mode"]] + RULES,
+            messages=messages,
+        )
+    except anthropic.APIError as e:  # no credit, bad key, network: keep talking instead of crashing
+        print("LLM error, using offline reply:", getattr(e, "message", e))
+        reply = offline_reply(text)
+        if not state["warned"]:
+            state["warned"] = True
+            reply["text"] = "My smart brain is offline right now, so I will keep it simple. " + reply["text"]
+        return reply
+    state["warned"] = False
     raw = resp.content[0].text
     try:
         data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
@@ -176,15 +221,22 @@ PAGE = """<!doctype html><meta name=viewport content="width=device-width,initial
 <body style="font-family:system-ui;max-width:560px;margin:auto;padding:16px">
 <h2>Pip server is running</h2>
 <p>Mode: <select id=m onchange="fetch('/mode?m='+this.selectedIndex)"></select></p>
-<form onsubmit="send(event)"><input id=q style="width:70%;padding:8px" placeholder="Type to Pip..."> <button>Send</button></form>
+<form onsubmit="send(event)"><input id=q style="width:60%;padding:8px" placeholder="Type to Pip..."> <button>Send</button> <button type=button id=mic onclick="listen()">&#127908; Talk</button></form>
+<p><label><input type=checkbox id=conv> Keep listening after Pip answers</label> <span id=st style="color:#888"></span></p>
 <div id=log></div>
 <script>
 async function load(){const s=await (await fetch('/api/state')).json();
  m.innerHTML=s.modes.map(x=>'<option>'+x+'</option>').join('');m.selectedIndex=s.mode;
  log.innerHTML=s.log.slice().reverse().map(e=>'<p><b>You:</b> '+e.user+'<br><b>Pip ('+e.emotion+'):</b> '+e.bot+'</p>').join('')}
-async function send(e){e.preventDefault();const t=q.value;q.value='';
+async function ask(t){if(!t.trim())return;st.textContent='thinking...';
  const r=await (await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})})).json();
- new Audio('data:audio/wav;base64,'+r.audio).play();load()}
+ const a=new Audio('data:audio/wav;base64,'+r.audio);st.textContent='Pip ('+r.emotion+'): '+r.text;
+ a.onended=()=>{if(conv.checked)listen()};a.play();load()}
+function send(e){e.preventDefault();const t=q.value;q.value='';ask(t)}
+function listen(){const R=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!R){st.textContent='Use Chrome or Safari for the Talk button.';return}
+ const r=new R();r.lang='en-US';r.onstart=()=>{st.textContent='listening...'};
+ r.onresult=e=>ask(e.results[0][0].transcript);r.onerror=e=>{st.textContent='mic: '+e.error};r.start()}
 load();setInterval(load,4000);
 </script></body>"""
 
