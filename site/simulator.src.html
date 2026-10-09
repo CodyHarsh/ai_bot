@@ -371,18 +371,22 @@ flowchart LR
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
-      <h3>No credit? Use a free brain</h3>
-      <p>The server can use other chat models by setting one variable before <code>python server.py</code>. Free limits change, so check each provider's page.</p>
+      <h3>The brain chain: Gemini first, with fallbacks</h3>
+      <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
+      <pre class="mermaid">
+flowchart LR
+  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| E[Built-in replies]
+      </pre>
       <div class="scroll"><table>
-        <thead><tr><th>Option</th><th>Get it</th><th>Run the server with</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal</th></tr></thead>
         <tbody>
-          <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export LLM_PROVIDER=groq</code><br><code>export GROQ_API_KEY=...</code></td><td>Fast, rate limited (about 30 requests per minute on the free plan). Good for demos.</td></tr>
-          <tr><td><b>Google Gemini</b></td><td>Free key at aistudio.google.com</td><td><code>export LLM_PROVIDER=gemini</code><br><code>export GEMINI_API_KEY=...</code></td><td>Free tier has daily limits that vary by model. Free-tier prompts may be used by Google to improve models.</td></tr>
-          <tr><td><b>Ollama</b> (on your Mac)</td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td><code>export LLM_PROVIDER=ollama</code></td><td>No key, no limits, works offline. Answers are simpler than a big cloud model.</td></tr>
-          <tr><td><b>Offline replies</b></td><td>Nothing to install</td><td><code>export LLM_MODE=offline</code></td><td>Built-in replies only. Useful to test the voice and the face.</td></tr>
+          <tr><td><b>Gemini</b> (first)</td><td>Free key at aistudio.google.com</td><td><code>export GEMINI_API_KEY=...</code></td></tr>
+          <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export GROQ_API_KEY=...</code></td></tr>
+          <tr><td><b>Ollama</b></td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td>No key. Keep the Ollama app running</td></tr>
+          <tr><td><b>Claude</b></td><td>Needs paid credit</td><td><code>export ANTHROPIC_API_KEY=...</code></td></tr>
         </tbody>
       </table></div>
-      <p>To pick a different model: <code>export LLM_MODEL=...</code>. Claude stays the default when no provider is set.</p>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
     </div>
   </section>
 </div>

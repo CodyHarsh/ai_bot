@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import time
 import wave
 
 import anthropic
@@ -27,22 +28,24 @@ from faster_whisper import WhisperModel
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-# Which brain to use. Default is Claude. Free options: groq, gemini, ollama (all speak the same chat format).
-#   LLM_PROVIDER=groq    + GROQ_API_KEY=...     (free key from console.groq.com)
-#   LLM_PROVIDER=gemini  + GEMINI_API_KEY=...   (free key from aistudio.google.com)
-#   LLM_PROVIDER=ollama                         (runs on your Mac, no key, no internet)
-# Any other OpenAI-style service: LLM_PROVIDER=openai + LLM_BASE_URL + LLM_API_KEY + LLM_MODEL
-PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
-PRESETS = {  # base url, key env var, default model
-    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY", "llama-3.1-8b-instant"),
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", "gemini-2.5-flash"),
-    "ollama": ("http://localhost:11434/v1", "", "llama3.2"),
-    "openai": (os.getenv("LLM_BASE_URL", ""), "LLM_API_KEY", ""),
+# The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
+# the next one answers, and the built-in offline replies are the last resort.
+#   default chain:  gemini -> groq -> ollama -> anthropic
+#   change it:      export LLM_CHAIN=gemini,ollama          (or one name, like LLM_CHAIN=groq)
+# Keys (set only the ones you have):
+#   GEMINI_API_KEY (free, aistudio.google.com)   GROQ_API_KEY (free, console.groq.com)
+#   ANTHROPIC_API_KEY (paid)                     ollama needs no key (ollama.com, then: ollama pull llama3.2)
+# Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL.
+# Any other OpenAI-style service: add "openai" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
+CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic")).split(",") if x.strip()]
+PRESETS = {  # base url, key env var(s), default model, model env var
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-2.5-flash", "GEMINI_MODEL"),
+    "groq": ("https://api.groq.com/openai/v1", ("GROQ_API_KEY",), "llama-3.1-8b-instant", "GROQ_MODEL"),
+    "ollama": ("http://localhost:11434/v1", (), "llama3.2", "OLLAMA_MODEL"),
+    "openai": (os.getenv("LLM_BASE_URL", ""), ("LLM_API_KEY",), os.getenv("LLM_MODEL", ""), "LLM_MODEL"),
 }
-_preset = PRESETS.get(PROVIDER, ("", "", ""))
-BASE_URL = os.getenv("LLM_BASE_URL", _preset[0]).rstrip("/")
-API_KEY = os.getenv(_preset[1], "") if _preset[1] else "ollama"
-LLM_MODEL = os.getenv("LLM_MODEL") or _preset[2] or "claude-haiku-5-5"
+CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
+COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
 VOICE = os.getenv("TTS_VOICE", "en-US-AnaNeural")      # cute child-like voice
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")  # tiny.en is faster, small.en is more accurate
 SAMPLE_RATE = 16000
@@ -64,21 +67,37 @@ RULES = (
     "plain words with no emojis, no markdown. Pick the emotion that matches your reply."
 )
 
-state = {"mode": 0, "history": [], "log": [], "warned": False}
+state = {"mode": 0, "history": [], "log": [], "warned": False, "provider": "-"}
+cooldown = {}                # provider name -> time when it may be tried again
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
 print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
 stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
 llm = None
-if PROVIDER == "anthropic":
+if "anthropic" in CHAIN:
     try:
         llm = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
-    except Exception as e:  # no key set: still run, with simple built-in replies
-        print("No Anthropic key found, running in offline mode:", e)
-elif not BASE_URL or (_preset[1] and not API_KEY):
-    print(f"LLM_PROVIDER={PROVIDER} needs {_preset[1] or 'LLM_BASE_URL'} to be set. Running in offline mode.")
-    OFFLINE = True
-print(f"LLM provider: {PROVIDER}, model: {LLM_MODEL}{' (offline replies)' if OFFLINE else ''}")
+    except Exception:
+        llm = None
+
+
+def provider_key(name: str) -> str:
+    keys = PRESETS.get(name, ("", (), "", ""))[1]
+    return next((os.environ[k] for k in keys if os.getenv(k)), "")
+
+
+def available(name: str) -> bool:
+    if name == "anthropic":
+        return llm is not None
+    if name == "ollama":
+        return True
+    return name in PRESETS and bool(PRESETS[name][0]) and bool(provider_key(name))
+
+
+ACTIVE = [n for n in CHAIN if available(n)]
+print("LLM chain:", " -> ".join(CHAIN), "| ready:", ", ".join(ACTIVE) or "none", "| last resort: offline replies")
+if OFFLINE:
+    print("LLM_MODE=offline: the LLM is skipped.")
 app = FastAPI()
 
 
@@ -128,41 +147,60 @@ def offline_reply(text: str) -> dict:
     return {"emotion": emotion, "text": reply}
 
 
-def call_llm(system: str, messages: list) -> str:
-    """Send the chat to the chosen provider and return the reply text."""
-    if PROVIDER == "anthropic":
-        resp = llm.messages.create(model=LLM_MODEL, max_tokens=200, system=system, messages=messages)
+def call_one(name: str, system: str, messages: list) -> str:
+    if name == "anthropic":
+        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
         return resp.content[0].text
+    base, _, default_model, model_env = PRESETS[name]
+    model = os.getenv(model_env) or default_model
     r = httpx.post(
-        BASE_URL + "/chat/completions",
-        headers={"Authorization": "Bearer " + API_KEY},
-        json={"model": LLM_MODEL, "messages": [{"role": "system", "content": system}] + messages,
+        base.rstrip("/") + "/chat/completions",
+        headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
+        json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
               "max_tokens": 200, "temperature": 0.8},
-        timeout=60,
+        timeout=60 if name == "ollama" else 20,
     )
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
 
+def call_llm(system: str, messages: list):
+    """Try each provider in the chain. Returns (reply text, provider name) or raises if all fail."""
+    errors = []
+    for name in ACTIVE:
+        if cooldown.get(name, 0) > time.time():
+            continue
+        try:
+            return call_one(name, system, messages), name
+        except Exception as e:  # any failure moves on to the next provider
+            cooldown[name] = time.time() + COOLDOWN_SECONDS
+            errors.append(f"{name}: {getattr(e, 'message', e)}")
+            print(f"[{name}] failed, trying the next one: {getattr(e, 'message', e)}")
+    raise RuntimeError("; ".join(errors) or "no provider available")
+
+
 def think(text: str) -> dict:
-    if OFFLINE or (PROVIDER == "anthropic" and llm is None):
-        return offline_reply(text)
+    if OFFLINE or not ACTIVE:
+        state["provider"] = "offline"
+        return {**offline_reply(text), "provider": "offline"}
     messages = state["history"][-8:] + [{"role": "user", "content": text}]
     try:
-        raw = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
-    except (anthropic.APIError, httpx.HTTPError, KeyError, IndexError, ValueError) as e:  # no credit, bad key, network: keep talking instead of crashing
-        print("LLM error, using offline reply:", getattr(e, "message", e))
-        reply = offline_reply(text)
+        raw, provider = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
+    except Exception as e:  # every provider failed: keep talking with built-in replies
+        print("All LLM providers failed, using offline reply:", e)
+        state["provider"] = "offline"
+        reply = {**offline_reply(text), "provider": "offline"}
         if not state["warned"]:
             state["warned"] = True
             reply["text"] = "My smart brain is offline right now, so I will keep it simple. " + reply["text"]
         return reply
+    state["provider"] = provider
     state["warned"] = False
     try:
         data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-        reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip()}
+        reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip(), "provider": provider}
     except Exception:
-        reply = {"emotion": "happy", "text": raw.strip()[:160]}
+        reply = {"emotion": "happy", "text": raw.strip()[:160], "provider": provider}
     if reply["emotion"] not in EMOTIONS:
         reply["emotion"] = "happy"
     if not reply["text"]:
@@ -195,7 +233,7 @@ def to_wav(pcm: bytes) -> bytes:
 
 def record(user: str, reply: dict):
     state["log"] = (state["log"] + [{"user": user, "emotion": reply["emotion"], "bot": reply["text"]}])[-30:]
-    print(f"[{MODES[state['mode']]}] you: {user!r} -> {reply['emotion']}: {reply['text']!r}")
+    print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you: {user!r} -> {reply['emotion']}: {reply['text']!r}")
 
 
 async def respond(text: str) -> dict:
@@ -223,6 +261,7 @@ async def talk(request: Request):
         "X-Emotion": reply["emotion"],
         "X-Text": reply["text"].encode("ascii", "ignore").decode()[:200],
         "X-Mode": MODES[state["mode"]],
+        "X-Provider": reply.get("provider", "-"),
     }
     return Response(audio, media_type="application/octet-stream", headers=headers)
 
@@ -261,7 +300,7 @@ async function load(){const s=await (await fetch('/api/state')).json();
  log.innerHTML=s.log.slice().reverse().map(e=>'<p><b>You:</b> '+e.user+'<br><b>Pip ('+e.emotion+'):</b> '+e.bot+'</p>').join('')}
 async function ask(t){if(!t.trim())return;st.textContent='thinking...';
  const r=await (await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})})).json();
- const a=new Audio('data:audio/wav;base64,'+r.audio);st.textContent='Pip ('+r.emotion+'): '+r.text;
+ const a=new Audio('data:audio/wav;base64,'+r.audio);st.textContent='Pip ('+r.emotion+', via '+(r.provider||'-')+'): '+r.text;
  a.onended=()=>{if(conv.checked)listen()};a.play();load()}
 function send(e){e.preventDefault();const t=q.value;q.value='';ask(t)}
 function listen(){const R=window.SpeechRecognition||window.webkitSpeechRecognition;
