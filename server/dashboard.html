@@ -34,6 +34,9 @@ canvas.spark{height:46px;width:100%}
   <canvas class="spark" id="spark" width="600" height="92"></canvas>
   <div class="hint" id="lvlhint"></div>
   <div class="lab" style="margin-top:8px"><span>mic gain setting (MIC_SHIFT) <b id="gain">-</b></span><span>speaker volume <b id="vol">-</b>%</span></div>
+  <div class="lab"><span>recordings sent <b id="rect">-</b></span><span>ignored (no speech) <b id="reci">-</b></span></div>
+  <div style="margin-top:8px"><button id="listenbtn">Listening: on</button> <span style="color:var(--muted);font-size:13px">mute it when other people are talking nearby</span></div>
+  <div class="hint warn" id="rechint"></div>
  </div>
  <div class="card"><h2>Last conversation</h2>
   <table id="turn"><tr><td>Waiting</td><td>Say something to Pip</td></tr></table>
@@ -177,6 +180,9 @@ function draw(){
    +chip('Mode: '+S.modes[S.mode],'ok')+chip('Brain: '+(h.provider||'-'),h.provider==='offline'?'wait':'ok')+chip(h.ffmpeg?'ffmpeg ok':'ffmpeg missing',h.ffmpeg?'ok':'no');
   const lvl=online?dev.lvl:0,thr=dev.thr||0;
   $('#lvl').textContent=online?lvl:'-';$('#thr').textContent=online?thr:'-';$('#gain').textContent=fmt(dev.gain);$('#vol').textContent=fmt(dev.vol);
+  $('#rect').textContent=S.rec_total;$('#reci').textContent=S.rec_ignored;
+  $('#listenbtn').textContent='Listening: '+(S.listen?'on':'OFF (muted)');$('#listenbtn').className=S.listen?'':'go';
+  $('#rechint').textContent=(S.rec_total>=5&&S.rec_ignored/S.rec_total>0.5)?'Most recordings had no speech. The room is probably noisy or people are talking nearby. Mute while others talk, or move the mic away from voices.':'';
   $('#lvlbar').style.width=scale(lvl)+'%';$('#thrbar').style.left=scale(thr)+'%';
   $('#lvlbar').style.background=thr&&lvl>thr?'var(--accent)':'var(--good)';
   $('#lvlhint').className='hint';$('#lvlhint').textContent='';
@@ -199,7 +205,8 @@ function draw(){
     $('#micp').textContent=m?`${m.rms}% average, ${m.peak}% peak, ${m.ms} ms`:'-';$('#micbar').style.width=m?Math.min(100,m.peak)+'%':'0';
     $('#spkp').textContent=sp?`${sp.rms}% average, ${sp.peak}% peak, ${sp.ms} ms`:'-';$('#spkbar').style.width=sp?Math.min(100,sp.peak)+'%':'0';
     let hint='',cls='hint';
-    if(m&&m.peak>=98){hint='The mic is clipping (too loud). Raise MIC_SHIFT by 1.';cls='hint bad'}
+    if(m&&m.ms>=5900){hint='The recording ran to the 6 second limit: background noise kept it going. Mute, or reduce the noise near the mic.';cls='hint warn'}
+    else if(m&&m.peak>=98){hint='The mic is clipping (too loud). Raise MIC_SHIFT by 1.';cls='hint bad'}
     else if(m&&m.peak<3){hint='The mic is very quiet. Lower MIC_SHIFT by 1 or speak closer.';cls='hint warn'}
     else if(sp&&sp.peak>=98){hint='The speaker audio is at the limit. Lower TTS_GAIN or SPEAKER_VOLUME if it crackles.';cls='hint warn'}
     else if(m||sp){hint='Levels look healthy.';cls='hint good'}
@@ -215,6 +222,7 @@ function draw(){
 }
 async function poll(){try{S=await (await fetch('/api/state')).json();draw()}catch(e){$('#top').innerHTML=chip('Server not reachable','no')}}
 poll();setInterval(poll,700);
+$('#listenbtn').onclick=()=>{post('/api/cmd',{listen:!(S&&S.listen)})};
 $('#beep').onclick=()=>{post('/api/cmd',{beep:true});$('#faceinfo').textContent='beep sent to the device'};
 $('#stopall').onclick=()=>{clearInterval(playTimer);playTimer=null;$('#faceinfo').textContent='stopped'};
 $('#playall').onclick=()=>{clearInterval(playTimer);let i=0;const go=()=>{if(i>=EMOS.length){clearInterval(playTimer);$('#faceinfo').textContent='done, all '+EMOS.length+' faces sent';return}

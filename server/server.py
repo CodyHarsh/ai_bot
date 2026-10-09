@@ -197,7 +197,7 @@ RULES = (
 state = {"mode": 0, "history": [], "log": [], "warned": False, "provider": "-"}
 cooldown = {}                # provider name -> time when it may be tried again
 START_TIME = time.time()
-state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": []})   # live data for the dashboard
+state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": [], "listen": True, "rec_total": 0, "rec_ignored": 0})   # live data for the dashboard
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
 print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
@@ -235,8 +235,18 @@ def transcribe(pcm: bytes) -> str:
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak > 0:
         audio = audio * min(8.0, 0.6 / peak)  # lift quiet mic audio
-    segments, _ = stt.transcribe(audio, language="en", beam_size=1, vad_filter=True)
+    segments, _ = stt.transcribe(audio, language="en", beam_size=1, vad_filter=True,
+                                 condition_on_previous_text=False, no_speech_threshold=0.6)
     return " ".join(s.text.strip() for s in segments).strip()
+
+
+FILLERS = {"you", "uh", "um", "hmm", "mm", "mhm", "the", "so", "oh", "ah", "huh", "i"}
+
+
+def junk(text: str) -> bool:
+    """Speech models invent words on pure noise ("you", "thanks for watching"). Ignore those."""
+    t = re.sub(r"[^a-z' ]", "", text.lower()).strip()
+    return len(t) < 2 or t in FILLERS or "thanks for watching" in t or "subtitles by" in t or "amara.org" in t
 
 
 def maybe_switch_mode(text: str) -> bool:
@@ -317,14 +327,14 @@ def post_chat(name: str, model: str, system: str, messages: list):
         base.rstrip("/") + "/chat/completions",
         headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
         json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
-              **({"max_completion_tokens": 200} if name == "openai" else {"max_tokens": 200, "temperature": 0.8})},
+              **({"max_completion_tokens": 800} if name == "openai" else {"max_tokens": 600, "temperature": 0.8})},
         timeout=60 if name == "ollama" else 20,
     )
 
 
 def call_one(name: str, system: str, messages: list) -> str:
     if name == "anthropic":
-        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
+        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=300, system=system, messages=messages, timeout=20)
         return resp.content[0].text
     _, _, default_model, model_env = PRESETS[name]
     forced = os.getenv(model_env)                      # a model you set yourself is never replaced
@@ -364,6 +374,24 @@ def call_llm(system: str, messages: list):
     raise RuntimeError("; ".join(errors) or "no provider available")
 
 
+def parse_reply(raw: str) -> dict:
+    """Read the model's answer even when it is cut off or wrapped in extra text."""
+    try:
+        data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+        return {k: str(data.get(k, "")).strip() for k in ("tone", "emotion", "text")}
+    except Exception:
+        pass
+
+    def field(name):
+        m = re.search(r'"' + name + r'"\s*:\s*"([^"]*)', raw)
+        return m.group(1).strip() if m else ""
+
+    out = {"tone": field("tone"), "emotion": field("emotion"), "text": field("text")}
+    if not out["text"] and not raw.lstrip().startswith(("{", "`")):
+        out["text"] = raw.strip()[:160]
+    return out
+
+
 def think(text: str) -> dict:
     if OFFLINE or not ACTIVE:
         state["provider"] = "offline"
@@ -381,12 +409,13 @@ def think(text: str) -> dict:
         return reply
     state["provider"] = provider
     state["warned"] = False
-    try:
-        data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-        reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip(),
-                 "tone": str(data.get("tone", "")).lower(), "provider": provider}
-    except Exception:
-        reply = {"emotion": "", "text": raw.strip()[:160], "tone": "", "provider": provider}
+    parsed = parse_reply(raw)
+    reply = {"emotion": parsed["emotion"].lower(), "text": parsed["text"], "tone": parsed["tone"].lower(), "provider": provider}
+    if not reply["text"]:   # the answer was empty or cut off: use a built-in reply for this turn
+        print(f"[{provider}] answer had no usable text ({raw[:100]!r}), using a built-in reply")
+        off = offline_reply(text)
+        reply["text"] = off["text"]
+        reply["emotion"] = reply["emotion"] or off["emotion"]
     keyword_tone = detect_tone(text)
     if reply["tone"] not in TONES:
         reply["tone"] = keyword_tone
@@ -396,7 +425,8 @@ def think(text: str) -> dict:
     reply = finalize_emotion(text, reply)
     if not reply["text"]:
         reply["text"] = "Hmm, I got a little lost."
-    state["history"] += [{"role": "user", "content": text}, {"role": "assistant", "content": raw}]
+    state["history"] += [{"role": "user", "content": text},
+                         {"role": "assistant", "content": json.dumps({"tone": reply["tone"], "emotion": reply["emotion"], "text": reply["text"]})}]
     state["history"] = state["history"][-16:]
     return reply
 
@@ -461,13 +491,17 @@ async def respond(text: str) -> dict:
 async def talk(request: Request):
     pcm = await request.body()
     if len(pcm) < SAMPLE_RATE * 2 * 0.4:  # under 0.4 s: ignore
+        state["rec_total"] += 1
+        state["rec_ignored"] += 1
         return Response(status_code=204)
     t0 = time.time()
     mic = levels(pcm)
+    state["rec_total"] += 1
     text = await asyncio.to_thread(transcribe, pcm)
     t1 = time.time()
-    print("heard:", repr(text))
-    if len(text) < 2:
+    print("heard:", repr(text), f"({mic['ms']} ms, level {mic['rms']}% / peak {mic['peak']}%)")
+    if junk(text):
+        state["rec_ignored"] += 1
         state["turn"] = {"at": time.time(), "source": "esp32", "heard": "", "note": "nothing understood", "mic": mic}
         return Response(status_code=204)
     reply = await respond(text)
@@ -516,7 +550,8 @@ async def get_state():
     if dev:
         dev["age"] = round(time.time() - dev.get("seen", 0), 1)
     return {"mode": state["mode"], "modes": MODES, "log": state["log"], "device": dev, "turn": state["turn"],
-            "lvl_hist": state["lvl_hist"], "health": health(), "emotions": EMOTIONS + ["listening"]}
+            "lvl_hist": state["lvl_hist"], "health": health(), "listen": state["listen"],
+            "rec_total": state["rec_total"], "rec_ignored": state["rec_ignored"], "emotions": EMOTIONS + ["listening"]}
 
 
 @app.get("/api/device")  # the ESP32 reports here every second or two, and receives commands in the reply
@@ -526,7 +561,7 @@ async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, em
                        "ip": request.client.host if request.client else "", "seen": time.time()}
     state["lvl_hist"] = (state["lvl_hist"] + [lvl])[-60:]
     cmd, state["cmd"] = state["cmd"], {}
-    return PlainTextResponse(f"force={cmd.get('face', '-')} beep={1 if cmd.get('beep') else 0}\n")
+    return PlainTextResponse(f"force={cmd.get('face', '-')} beep={1 if cmd.get('beep') else 0} listen={1 if state['listen'] else 0}\n")
 
 
 @app.post("/api/cmd")  # dashboard buttons: show a face on the real OLED, or beep the real speaker
@@ -536,6 +571,8 @@ async def cmd(request: Request):
         state["cmd"]["face"] = body["face"]
     if body.get("beep"):
         state["cmd"]["beep"] = True
+    if "listen" in body:
+        state["listen"] = bool(body["listen"])
     return {"queued": state["cmd"]}
 
 

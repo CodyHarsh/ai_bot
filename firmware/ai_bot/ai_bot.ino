@@ -21,7 +21,7 @@
 
   Serial Monitor (115200) commands:
     n / p = next / previous emotion   h = happy   l = listening   t = thinking
-    k = toggle "talking mouth" demo   1..4 = switch mode (Buddy, Study, Mood, Sleep)
+    k = toggle "talking mouth" demo   m = mute / unmute the microphone   1..4 = switch mode (Buddy, Study, Mood, Sleep)
 */
 
 #include <WiFi.h>
@@ -53,8 +53,8 @@ const int   SERVER_PORT = 8000;
 #define SAMPLE_RATE 16000
 #define FRAME 320                 // 20 ms of audio
 #define PRE_FRAMES 4              // 80 ms of audio kept from before speech was detected
-#define MAX_FRAMES 400            // max 8 s per utterance
-#define SILENCE_FRAMES 38         // ~760 ms of quiet ends the utterance
+#define MAX_FRAMES 300            // max 6 s per utterance
+#define SILENCE_FRAMES 36         // ~720 ms of quiet ends the utterance (quiet = well below your loudest moment)
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 I2SClass i2s;
@@ -302,6 +302,10 @@ int16_t preRing[PRE_FRAMES][FRAME];
 int preIdx = 0;
 int threshold = 400;
 int lastLevel = 0;            // latest microphone level, shown live on the dashboard
+float noiseEst = 50;          // slowly follows the background noise, so the speech threshold adapts to the room
+bool listenOn = true;         // false = muted (dashboard button, or key 'm' in the Serial Monitor)
+int lastCode = 0;             // HTTP code of the last conversation (200 = answered, 204 = no speech understood)
+unsigned long quietUntil = 0; // pause before listening again, so noise cannot retrigger straight away
 
 void calibrate() {
   message("Listening to the room", "stay quiet...");
@@ -311,6 +315,7 @@ void calibrate() {
     if (i >= 10) { total += rmsOf(frameBuf, n); cnt++; }
   }
   int noise = cnt ? total / cnt : 50;
+  noiseEst = noise;
   threshold = max(noise * 3, noise + 150);
   Serial.printf("Noise floor %d, speech threshold %d\n", noise, threshold);
 }
@@ -407,6 +412,7 @@ void receiveAndPlay(WiFiClient& c) {
     else if (low.startsWith("x-emotion:")) { emoStr = l.substring(10); emoStr.trim(); }
     else if (low.startsWith("x-text:")) { text = l.substring(7); text.trim(); }
   }
+  lastCode = code;
   Serial.printf("Server: HTTP %d, emotion=%s, text=%s\n", code, emoStr.c_str(), text.c_str());
   if (code != 200) { setFace(code == 204 ? HAPPY : SAD, 2500); return; }
 
@@ -439,7 +445,7 @@ void receiveAndPlay(WiFiClient& c) {
   }
   playSilence(120);
   talking = false; talkAmp = 0;
-  for (int i = 0; i < 12; i++) readMono(frameBuf, FRAME);   // drop mic data captured while speaking
+  for (int i = 0; i < 25; i++) readMono(frameBuf, FRAME);   // drop mic data captured while speaking (stops it hearing itself)
   setFace(emotionFromName(emoStr), 4000);
   lastActivity = millis();
 }
@@ -460,11 +466,15 @@ void conversation() {
   for (int k = 0; k < PRE_FRAMES; k++) sendChunk(c, preRing[(preIdx + k) % PRE_FRAMES], FRAME);
 
   static int16_t batch[FRAME * 5];
-  int bn = 0, frames = PRE_FRAMES, quiet = 0;
+  int bn = 0, frames = PRE_FRAMES, quiet = 0, peak = threshold;
   unsigned long lastDraw = 0;
+  lastCode = 0;
   while (frames < MAX_FRAMES && quiet < SILENCE_FRAMES) {
     size_t n = readMono(frameBuf, FRAME);
-    if (rmsOf(frameBuf, n) > threshold) quiet = 0; else quiet++;
+    int lvl = rmsOf(frameBuf, n);
+    if (lvl > peak) peak = lvl;
+    int endLevel = max(threshold, peak * 3 / 10);   // the end of speech = well below the loudest moment, even in a noisy room
+    if (lvl > endLevel) quiet = 0; else quiet++;
     memcpy(batch + bn * FRAME, frameBuf, FRAME * 2);
     if (++bn == 5) { sendChunk(c, batch, FRAME * 5); bn = 0; }
     frames++;
@@ -513,6 +523,11 @@ void report() {
     name.trim();
     for (int i = 0; i < EMO_COUNT; i++) if (name == EMO_NAMES[i]) { setFace((Emotion)i, 3500); break; }
   }
+  int li = body.indexOf("listen=");
+  if (li >= 0) {
+    bool on = body.charAt(li + 7) != '0';
+    if (on != listenOn) { listenOn = on; setFace(on ? HAPPY : SLEEPY); Serial.println(on ? "listening: on" : "listening: OFF (muted)"); }
+  }
   if (body.indexOf("beep=1") >= 0) { playTone(660, 120); playTone(880, 160); playSilence(60); }
 }
 
@@ -525,6 +540,7 @@ void handleSerial() {
     else if (ch == 'n') setFace((Emotion)((emo + 1) % EMO_COUNT));
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
+    else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); Serial.println(listenOn ? "listening: on" : "listening: OFF (muted)"); }
     else if (ch >= '1' && ch <= '4' && RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
@@ -591,15 +607,20 @@ void loop() {
 
   static int loud = 0;
   lastLevel = rmsOf(frameBuf, n);
-  if (lastLevel > threshold) loud++; else loud = 0;
+  if (lastLevel < threshold) {                       // follow the room's background noise slowly
+    noiseEst = noiseEst * 0.99f + lastLevel * 0.01f;
+    threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
+  }
+  if (millis() < quietUntil || !listenOn) loud = 0;
+  else if (lastLevel > threshold * 13 / 10) loud++; else loud = 0;
 
   if (millis() - lastDraw > 100) {
     lastDraw = millis();
-    if (holdUntil && millis() > holdUntil) { holdUntil = 0; setFace(HAPPY); lastActivity = millis(); }
+    if (holdUntil && millis() > holdUntil) { holdUntil = 0; setFace(listenOn ? HAPPY : SLEEPY); lastActivity = millis(); }
     if (!holdUntil && emo != SLEEPY && millis() - lastActivity > 60000) setFace(SLEEPY);
     drawFace();
   }
   if (loud == 0) report();
-  if (loud >= 3) { loud = 0; conversation(); }
+  if (loud >= 3) { loud = 0; conversation(); quietUntil = millis() + (lastCode == 200 ? 1200 : 3500); }
 #endif
 }
