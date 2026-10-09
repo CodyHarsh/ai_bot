@@ -20,13 +20,29 @@ import wave
 
 import anthropic
 import edge_tts
+import httpx
 import numpy as np
 import uvicorn
 from faster_whisper import WhisperModel
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-5-5")
+# Which brain to use. Default is Claude. Free options: groq, gemini, ollama (all speak the same chat format).
+#   LLM_PROVIDER=groq    + GROQ_API_KEY=...     (free key from console.groq.com)
+#   LLM_PROVIDER=gemini  + GEMINI_API_KEY=...   (free key from aistudio.google.com)
+#   LLM_PROVIDER=ollama                         (runs on your Mac, no key, no internet)
+# Any other OpenAI-style service: LLM_PROVIDER=openai + LLM_BASE_URL + LLM_API_KEY + LLM_MODEL
+PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
+PRESETS = {  # base url, key env var, default model
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY", "llama-3.1-8b-instant"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", "gemini-2.5-flash"),
+    "ollama": ("http://localhost:11434/v1", "", "llama3.2"),
+    "openai": (os.getenv("LLM_BASE_URL", ""), "LLM_API_KEY", ""),
+}
+_preset = PRESETS.get(PROVIDER, ("", "", ""))
+BASE_URL = os.getenv("LLM_BASE_URL", _preset[0]).rstrip("/")
+API_KEY = os.getenv(_preset[1], "") if _preset[1] else "ollama"
+LLM_MODEL = os.getenv("LLM_MODEL") or _preset[2] or "claude-haiku-5-5"
 VOICE = os.getenv("TTS_VOICE", "en-US-AnaNeural")      # cute child-like voice
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")  # tiny.en is faster, small.en is more accurate
 SAMPLE_RATE = 16000
@@ -53,11 +69,16 @@ OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offlin
 
 print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
 stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-try:
-    llm = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
-except Exception as e:  # no key set: still run, with simple built-in replies
-    print("No Anthropic key found, running in offline mode:", e)
-    llm = None
+llm = None
+if PROVIDER == "anthropic":
+    try:
+        llm = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+    except Exception as e:  # no key set: still run, with simple built-in replies
+        print("No Anthropic key found, running in offline mode:", e)
+elif not BASE_URL or (_preset[1] and not API_KEY):
+    print(f"LLM_PROVIDER={PROVIDER} needs {_preset[1] or 'LLM_BASE_URL'} to be set. Running in offline mode.")
+    OFFLINE = True
+print(f"LLM provider: {PROVIDER}, model: {LLM_MODEL}{' (offline replies)' if OFFLINE else ''}")
 app = FastAPI()
 
 
@@ -107,18 +128,29 @@ def offline_reply(text: str) -> dict:
     return {"emotion": emotion, "text": reply}
 
 
+def call_llm(system: str, messages: list) -> str:
+    """Send the chat to the chosen provider and return the reply text."""
+    if PROVIDER == "anthropic":
+        resp = llm.messages.create(model=LLM_MODEL, max_tokens=200, system=system, messages=messages)
+        return resp.content[0].text
+    r = httpx.post(
+        BASE_URL + "/chat/completions",
+        headers={"Authorization": "Bearer " + API_KEY},
+        json={"model": LLM_MODEL, "messages": [{"role": "system", "content": system}] + messages,
+              "max_tokens": 200, "temperature": 0.8},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
 def think(text: str) -> dict:
-    if OFFLINE or llm is None:
+    if OFFLINE or (PROVIDER == "anthropic" and llm is None):
         return offline_reply(text)
     messages = state["history"][-8:] + [{"role": "user", "content": text}]
     try:
-        resp = llm.messages.create(
-            model=LLM_MODEL,
-            max_tokens=200,
-            system=MODE_PROMPTS[state["mode"]] + RULES,
-            messages=messages,
-        )
-    except anthropic.APIError as e:  # no credit, bad key, network: keep talking instead of crashing
+        raw = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
+    except (anthropic.APIError, httpx.HTTPError, KeyError, IndexError, ValueError) as e:  # no credit, bad key, network: keep talking instead of crashing
         print("LLM error, using offline reply:", getattr(e, "message", e))
         reply = offline_reply(text)
         if not state["warned"]:
@@ -126,7 +158,6 @@ def think(text: str) -> dict:
             reply["text"] = "My smart brain is offline right now, so I will keep it simple. " + reply["text"]
         return reply
     state["warned"] = False
-    raw = resp.content[0].text
     try:
         data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
         reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip()}

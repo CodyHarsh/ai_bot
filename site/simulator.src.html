@@ -371,12 +371,18 @@ flowchart LR
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
-      <h3>Costs and swaps</h3>
-      <ul>
-        <li>Whisper and edge-tts are free. The only paid piece is the Claude API, a few cents for a whole demo with Haiku.</li>
-        <li>No internet at the venue? Use a phone hotspot for both the laptop and the ESP32.</li>
-        <li>Want another LLM? Only the <code>think()</code> function in <code>server.py</code> changes.</li>
-      </ul>
+      <h3>No credit? Use a free brain</h3>
+      <p>The server can use other chat models by setting one variable before <code>python server.py</code>. Free limits change, so check each provider's page.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Option</th><th>Get it</th><th>Run the server with</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export LLM_PROVIDER=groq</code><br><code>export GROQ_API_KEY=...</code></td><td>Fast, rate limited (about 30 requests per minute on the free plan). Good for demos.</td></tr>
+          <tr><td><b>Google Gemini</b></td><td>Free key at aistudio.google.com</td><td><code>export LLM_PROVIDER=gemini</code><br><code>export GEMINI_API_KEY=...</code></td><td>Free tier has daily limits that vary by model. Free-tier prompts may be used by Google to improve models.</td></tr>
+          <tr><td><b>Ollama</b> (on your Mac)</td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td><code>export LLM_PROVIDER=ollama</code></td><td>No key, no limits, works offline. Answers are simpler than a big cloud model.</td></tr>
+          <tr><td><b>Offline replies</b></td><td>Nothing to install</td><td><code>export LLM_MODE=offline</code></td><td>Built-in replies only. Useful to test the voice and the face.</td></tr>
+        </tbody>
+      </table></div>
+      <p>To pick a different model: <code>export LLM_MODEL=...</code>. Claude stays the default when no provider is set.</p>
     </div>
   </section>
 </div>

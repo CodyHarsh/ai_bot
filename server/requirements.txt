@@ -4,3 +4,4 @@ anthropic
 faster-whisper
 edge-tts
 numpy
+httpx
