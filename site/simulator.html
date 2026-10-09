@@ -336,6 +336,9 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     MAX98357A VIN-&gt;5V   GND-&gt;GND  BCLK-&gt;GPIO14  LRC-&gt;GPIO25  DIN-&gt;GPIO22  (speaker on + / -)
     OLED      VDD-&gt;3V3  GND-&gt;GND  SCK(SCL)-&gt;GPIO19  SDA-&gt;GPIO21
 
+  ONE FILE does everything. Pick what it does with RUN_MODE below:
+    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test
+
   Serial Monitor (115200) commands:
     n / p = next / previous emotion   h = happy   l = listening   t = thinking
     k = toggle "talking mouth" demo   1..4 = switch mode (Buddy, Study, Mood, Sleep)
@@ -353,9 +356,9 @@ const char* WIFI_SSID   = "YOUR_WIFI_NAME";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 const char* SERVER_HOST = "192.168.1.50";   // your laptop's IP, where server.py runs
 const int   SERVER_PORT = 8000;
-#define FACE_TEST_ONLY 0     // 1 = only test the OLED faces (no WiFi, no audio)
-#define SPEAKER_VOLUME 70    // percent, 0..100 (raise slowly, the amp is loud)
-#define MIC_SHIFT 14         // mic gain: lower = louder (try 13..16)
+#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test
+#define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
+#define MIC_SHIFT 12         // mic gain: lower = louder. 14 = quiet, 12 = 4x louder, 11 = 8x, 10 = 16x
 // ======================================================
 
 // ---------- pins (from your Cirkit circuit) ----------
@@ -643,6 +646,62 @@ void playSilence(int ms) {
   for (int i = 0; i &lt; ms / 10; i++) i2s.write((uint8_t*)z, sizeof(z));
 }
 
+// Volume with a soft limiter: loud peaks are squeezed instead of cut off, so higher volume stays clean.
+inline int32_t amplify(int16_t s) {
+  int32_t v = ((int32_t)s * SPEAKER_VOLUME) / 100;
+  const int32_t knee = 20000;
+  if (v &gt; knee) v = knee + (v - knee) / 4;
+  else if (v &lt; -knee) v = -knee + (v + knee) / 4;
+  return constrain(v, -32767, 32767);
+}
+
+void playTone(float freq, int ms) {
+  static int32_t out[2 * 160];
+  static float phase = 0;
+  int total = SAMPLE_RATE * ms / 1000;
+  for (int done = 0; done &lt; total; done += 160) {
+    for (int i = 0; i &lt; 160; i++) {
+      int32_t v = amplify((int16_t)(sin(phase) * 8000));
+      phase += 2 * PI * freq / SAMPLE_RATE;
+      if (phase &gt; 2 * PI) phase -= 2 * PI;
+      out[2 * i] = out[2 * i + 1] = v &lt;&lt; 16;
+    }
+    i2s.write((uint8_t*)out, sizeof(out));
+  }
+}
+
+// RUN_MODE 2: shows the microphone level on the OLED and in the Serial Monitor
+void micMeter() {
+  static unsigned long last = 0;
+  static int peak = 0;
+  size_t n = readMono(frameBuf, FRAME);
+  int level = rmsOf(frameBuf, n);
+  peak = max(level, (int)(peak * 0.97f));
+  if (millis() - last &lt; 100) return;
+  last = millis();
+  Serial.printf("level %5d  peak %5d  ", level, peak);
+  for (int i = 0; i &lt; min(level / 100, 50); i++) Serial.print('#');
+  Serial.println("");
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(W);
+  display.setCursor(0, 0); display.print("MIC TEST: talk or clap");
+  display.drawRect(2, 20, 124, 16, W);
+  display.fillRect(4, 22, constrain(level / 40, 0, 120), 12, W);
+  display.setCursor(0, 44); display.print(String("level ") + level);
+  display.setCursor(0, 54); display.print(String("peak  ") + peak);
+  display.display();
+}
+
+// RUN_MODE 3: two beeps every 2 seconds
+void speakerTest() {
+  message("SPEAKER TEST", "beep boop");
+  Serial.println("beep");
+  playTone(660, 150);
+  playTone(880, 250);
+  playSilence(100);
+  delay(2000);
+}
+
 Emotion emotionFromName(String s) {
   s.toLowerCase();
   for (int i = 0; i &lt; EMO_COUNT; i++) if (s == EMO_NAMES[i]) return (Emotion)i;
@@ -688,12 +747,12 @@ void receiveAndPlay(WiFiClient&amp; c) {
     int16_t* s = (int16_t*)buf;
     float e = 0;
     for (int i = 0; i &lt; ns; i++) {
-      int32_t v = ((int32_t)s[i] * SPEAKER_VOLUME) / 100;
+      int32_t v = amplify(s[i]);
       e += abs(v);
       out[2 * i] = out[2 * i + 1] = v &lt;&lt; 16;
     }
     i2s.write((uint8_t*)out, ns * 8);
-    talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / 5000.0f);
+    talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
     if (have &amp; 1) { buf[0] = buf[have - 1]; have = 1; } else have = 0;
     if (millis() - lastDraw &gt; 90) { animate(); drawFace(); lastDraw = millis(); }
   }
@@ -756,7 +815,7 @@ void handleSerial() {
     else if (ch == 'n') setFace((Emotion)((emo + 1) % EMO_COUNT));
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
-    else if (ch &gt;= '1' &amp;&amp; ch &lt;= '4' &amp;&amp; !FACE_TEST_ONLY) setServerMode(ch - '1');
+    else if (ch &gt;= '1' &amp;&amp; ch &lt;= '4' &amp;&amp; RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
 }
@@ -773,22 +832,29 @@ void setup() {
   randomSeed(micros());
   setFace(STARRY, 1500); drawFace();
 
-#if FACE_TEST_ONLY
+#if RUN_MODE == 1
   Serial.println("FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
 #else
+#if RUN_MODE == 0
   message("Connecting WiFi...", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
   Serial.println("\nESP32 IP: " + WiFi.localIP().toString());
-
+#endif
   i2s.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);
   if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
     Serial.println("I2S init failed");
     message("I2S failed", "check wiring");
     while (true) delay(1000);
   }
+#if RUN_MODE == 0
   calibrate();
+#elif RUN_MODE == 2
+  Serial.println("MIC TEST: talk or clap, the bar should grow.");
+#else
+  Serial.println("SPEAKER TEST: you should hear a beep every 2 seconds.");
+#endif
 #endif
   lastActivity = millis();
   setFace(HAPPY);
@@ -799,11 +865,15 @@ void loop() {
   animate();
   static unsigned long lastDraw = 0, lastCycle = 0;
 
-#if FACE_TEST_ONLY
+#if RUN_MODE == 1
   if (millis() - lastCycle &gt; 2500 &amp;&amp; !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); Serial.printf("face: %s\n", EMO_NAMES[emo]); }
   if (mouthDemo) talkAmp = (sin(millis() / 90.0) + 1) / 2;
   drawFace();
   delay(50);
+#elif RUN_MODE == 2
+  micMeter();
+#elif RUN_MODE == 3
+  speakerTest();
 #else
   size_t n = readMono(frameBuf, FRAME);
   memcpy(preRing[preIdx], frameBuf, FRAME * 2);
@@ -957,6 +1027,7 @@ PRESETS = {  # base url, key env var(s), default model, model env var
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
 COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
 VOICE = os.getenv("TTS_VOICE", "en-US-AnaNeural")      # cute child-like voice
+TTS_GAIN = os.getenv("TTS_GAIN", "2.0")                # voice loudness: 1.0 = normal, 2.0 = twice as loud (a limiter prevents clipping)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")  # tiny.en is faster, small.en is more accurate
 SAMPLE_RATE = 16000
 
@@ -1113,20 +1184,65 @@ def offline_reply(text: str) -&gt; dict:
     return {"emotion": face_for(tone, text), "text": reply, "tone": tone}
 
 
-def call_one(name: str, system: str, messages: list) -&gt; str:
-    if name == "anthropic":
-        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
-        return resp.content[0].text
-    base, _, default_model, model_env = PRESETS[name]
-    model = os.getenv(model_env) or default_model
-    r = httpx.post(
+NOT_CHAT = re.compile(r"whisper|tts|audio|speech|transcribe|realtime|embed|guard|moderation|image|imagen|veo|vision|robotics|computer-use|"
+                      r"search|codex|instruct|aqa|learnlm|gemma|orpheus|safeguard|live|dall|davinci|babbage|sora|diffusion", re.I)
+MODEL_PREFERENCE = {  # earlier words win; the newest matching model is picked
+    "groq": ["llama-3.3-70b", "llama-3.1-8b", "llama", "gpt-oss", "qwen"],
+    "gemini": ["flash", "pro"],
+    "openai": ["gpt-4o-mini", "mini", "gpt-4o", "gpt"],
+    "ollama": ["llama", "qwen", "gemma", "mistral", ""],
+    "custom": [""],
+}
+found_models = {}   # provider -&gt; model that actually worked
+
+
+def discover_model(name: str):
+    """Ask the provider which models exist and pick a sensible chat model. Used when the default name is gone."""
+    base = PRESETS[name][0].rstrip("/")
+    r = httpx.get(base + "/models", headers={"Authorization": "Bearer " + (provider_key(name) or "none")}, timeout=15)
+    r.raise_for_status()
+    ids = [m.get("id", "").replace("models/", "") for m in r.json().get("data", [])]
+    ids = [i for i in ids if i and not NOT_CHAT.search(i)]
+    stable = [i for i in ids if not re.search(r"preview|exp|beta|latest", i, re.I)] or ids
+    for word in MODEL_PREFERENCE.get(name, [""]):
+        hits = sorted([i for i in stable if word in i], reverse=True)
+        if hits:
+            return hits[0]
+    return None
+
+
+def post_chat(name: str, model: str, system: str, messages: list):
+    base = PRESETS[name][0]
+    return httpx.post(
         base.rstrip("/") + "/chat/completions",
         headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
         json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
               **({"max_completion_tokens": 200} if name == "openai" else {"max_tokens": 200, "temperature": 0.8})},
         timeout=60 if name == "ollama" else 20,
     )
-    r.raise_for_status()
+
+
+def call_one(name: str, system: str, messages: list) -&gt; str:
+    if name == "anthropic":
+        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
+        return resp.content[0].text
+    _, _, default_model, model_env = PRESETS[name]
+    forced = os.getenv(model_env)                      # a model you set yourself is never replaced
+    model = forced or found_models.get(name) or default_model
+    r = post_chat(name, model, system, messages)
+    if r.status_code in (400, 404) and not forced:     # the default model name is probably retired: find a current one
+        try:
+            better = discover_model(name)
+        except Exception as e:
+            better = None
+            print(f"[{name}] could not list models: {e}")
+        if better and better != model:
+            print(f"[{name}] model '{model}' did not work, trying '{better}'")
+            r = post_chat(name, better, system, messages)
+            if r.status_code &lt; 400:
+                found_models[name] = better
+    if r.status_code &gt;= 400:   # show the provider's own explanation, e.g. "insufficient_quota" or "model not found"
+        raise RuntimeError(f"HTTP {r.status_code} (model {model}): {r.text[:300]}")
     return r.json()["choices"][0]["message"]["content"]
 
 
@@ -1188,7 +1304,7 @@ async def speak(text: str) -&gt; bytes:
         if chunk["type"] == "audio":
             mp3 += chunk["data"]
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
+        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
     )
     pcm, _ = await proc.communicate(bytes(mp3))
@@ -1720,19 +1836,19 @@ const PHASES=[
  {t:'Phase 2 · OLED face',s:'about 10 min',items:[
   ['Wire the OLED only','VDD to 3V3, GND to GND, SCK to GPIO19, SDA to GPIO21. Unplug USB while wiring.'],
   ['Open the main firmware','Code tab &gt; "ai_bot.ino" &gt; Copy. In Arduino IDE, File &gt; New Sketch, select all, paste, save as <code>ai_bot</code>.'],
-  ['Turn on face-test mode','Near the top change <code>#define FACE_TEST_ONLY 0</code> to <code>1</code>. This skips WiFi and audio.'],
+  ['Turn on face-test mode','Near the top change <code>#define RUN_MODE 0</code> to <code>1</code>. This skips WiFi and audio. (One file does everything: 0 full bot, 1 face test, 2 mic test, 3 speaker test.)'],
   ['Upload','Click Upload. The OLED should show a star-eyed face, then cycle through all 16 emotions every 2.5 seconds.'],
   ['Try the serial keys','Tools &gt; Serial Monitor, 115200 baud. Press <code>n</code> next face, <code>p</code> previous, <code>k</code> talking mouth, then Enter.'],
   ['Screen stays black?','Swap SDA and SCL, check 3V3 and GND, and make sure the OLED address is 0x3C (the sketch uses <code>OLED_ADDR</code>).']]},
  {t:'Phase 3 · Microphone',s:'about 10 min',items:[
   ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
-  ['Open the mic test','Code tab &gt; "test_mic.ino". Paste into a new sketch and upload.'],
+  ['Switch to the mic test','Set <code>#define RUN_MODE 2</code> in <code>ai_bot.ino</code> and upload. The OLED also shows a level bar. (The separate <code>test_mic.ino</code> still works too.)'],
   ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
-  ['Too quiet or too loud?','Later you can change <code>MIC_SHIFT</code> in the main firmware: 13 is louder, 15 is quieter.']]},
+  ['Too quiet or too loud?','Change <code>MIC_SHIFT</code>: 12 is the default, 11 is twice as sensitive, 10 four times, 13 is quieter. Then upload again and watch the bar.']]},
  {t:'Phase 4 · Speaker',s:'about 10 min',items:[
   ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
   ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
-  ['Open the speaker test','Code tab &gt; "test_speaker.ino". Paste into a new sketch and upload.'],
+  ['Switch to the speaker test','Set <code>#define RUN_MODE 3</code> in <code>ai_bot.ino</code> and upload. (The separate <code>test_speaker.ino</code> still works too.)'],
   ['Listen','You should hear a soft beep-boop every 2 seconds. If nothing: check 5V and the DIN wire. If it is distorted, lower <code>VOLUME</code>.']]},
  {t:'Phase 5 · The brain on your laptop',s:'about 20 min',items:[
   ['macOS: install Homebrew (skip if you have it)','Open Terminal and run the install command from brew.sh.'],
@@ -1749,13 +1865,13 @@ const PHASES=[
   ['Find your Mac IP','<pre>ipconfig getifaddr en0</pre>If that prints nothing, try <code>en1</code>. This is your <code>SERVER_HOST</code>. Windows: <code>ipconfig</code>. Linux: <code>ip a</code>.'],
   ['Check the ESP32 can reach it','On your phone (same WiFi) open <code>http://YOUR-MAC-IP:8000</code>. If the Pip page loads, the ESP32 will connect too.']]},
  {t:'Phase 6 · Put it all together',s:'about 15 min',items:[
-  ['Turn face-test mode off','In <code>ai_bot.ino</code> set <code>#define FACE_TEST_ONLY 0</code>.'],
+  ['Switch to the full bot','In <code>ai_bot.ino</code> set <code>#define RUN_MODE 0</code>.'],
   ['Fill in the config','Set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> (2.4 GHz only) and <code>SERVER_HOST</code> (your laptop IP from phase 5).'],
   ['Upload the firmware','Click Upload. Open Tools &gt; Serial Monitor and set the speed to <b>115200</b>. If upload hangs on Connecting, hold BOOT.'],
   ['Watch the boot','You should see the ESP32 IP, then "Noise floor ... speech threshold ...". Stay quiet during the 1 second calibration.'],
   ['Say hello','Speak a short sentence. The face turns to listening, then thinking, then the speaker answers and the face matches the reply.'],
   ['Switch modes','Say "study mode", "mood mode", "sleep mode" or "buddy mode". Or press 1 to 4 in the Serial Monitor.'],
-  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Too loud speaker: lower <code>SPEAKER_VOLUME</code>. Picks up noise: stay closer to the mic.']]},
+  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Speaker too quiet or too loud: change <code>SPEAKER_VOLUME</code> (default 200, 300 is louder, 100 is normal) and <code>TTS_GAIN</code> on the server (default 2.0). Picks up noise: stay closer to the mic.']]},
  {t:'Phase 7 · Demo day',s:'last',items:[
   ['Use a phone hotspot','Connect both your Mac and the ESP32 to it. Update <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> once.'],
   ['Pre-test your lines','Run your 5 demo questions twice so the speech model is warm.'],
@@ -1790,7 +1906,7 @@ const TROUBLE=[
  ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
  ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
- ['Speaker crackles or is too loud','Lower <code>SPEAKER_VOLUME</code>. Make sure the speaker is wired to VO+ and VO−, not GND.'],
+ ['Speaker crackles, resets the board, or is too loud','Lower <code>SPEAKER_VOLUME</code> (try 150) and <code>TTS_GAIN</code> (try 1.5). A loud speaker on USB power can drop the voltage and restart the ESP32, so use a good USB port or a 5V 2A adapter. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
 ];
 $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${t[1]}</p></details>`).join('');
@@ -1799,23 +1915,23 @@ $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${
 /* ---------- test run ---------- */
 const TESTS=[
  {n:'0 · Before you plug anything in',tag:'code only, no wiring',
-  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code>, <code>test_mic.ino</code> and <code>test_speaker.ino</code>.','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
+  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code> (it contains all the tests).','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
   e:['Each sketch ends with "Done compiling".','The server prints "Loading speech-to-text model" and then keeps running.','<code>http://localhost:8000</code> loads and answers when you type "hello".'],
   f:['Compile error: copy the red text. <code>ESP_I2S.h</code> missing means the core is not 3.x.','No sound from the server page: check the Mac volume, and that <code>ffmpeg -version</code> works.']},
  {n:'1 · Board and upload',tag:'USB only',
-  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>FACE_TEST_ONLY</code> to <code>1</code>, click Upload.'],
+  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>RUN_MODE</code> to <code>1</code>, click Upload.'],
   e:['"Hard resetting via RTS pin… Done uploading." appears.'],
   f:['Stuck on "Connecting...": hold the <b>BOOT</b> button until it starts writing.','No port: try another cable, install the CP210x or CH340 driver, replug.','"Resource busy": close the Serial Monitor and any second Arduino window.']},
  {n:'2 · OLED faces',tag:'face test mode',
   d:['Open Tools &gt; Serial Monitor at <b>115200</b>.','Press <code>n</code> then Enter a few times. Press <code>k</code> then Enter for the talking mouth.'],
   e:['A star-eyed face first, then a new emotion every 2.5 seconds.','The face blinks, bobs slightly, and the mouth moves after <code>k</code>.','Serial prints <code>face: happy</code>, <code>face: excited</code> and so on.'],
   f:['Black screen: swap SDA and SCL, recheck 3V3 and GND.','Serial says "OLED init failed": the address may be 0x3C or 0x3D, and the wires may be loose.']},
- {n:'3 · Microphone',tag:'test_mic.ino',
-  d:['Upload <code>test_mic.ino</code> and open the Serial Monitor at 115200.','Stay quiet for 2 seconds, then clap, then talk.'],
+ {n:'3 · Microphone',tag:'RUN_MODE 2',
+  d:['Set <code>RUN_MODE</code> to <code>2</code> in <code>ai_bot.ino</code>, upload, and open the Serial Monitor at 115200 (the OLED shows a level bar too).','Stay quiet for 2 seconds, then clap, then talk.'],
   e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
-  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: later lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code>.']},
- {n:'4 · Speaker',tag:'test_speaker.ino',
-  d:['Upload <code>test_speaker.ino</code>.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (11 is twice as sensitive as 12).']},
+ {n:'4 · Speaker',tag:'RUN_MODE 3',
+  d:['Set <code>RUN_MODE</code> to <code>3</code> in <code>ai_bot.ino</code> and upload.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
   e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],
   f:['Silence: check VIN to 5V (needs USB power), DIN to GPIO22, BCLK to GPIO14, LRC to GPIO25.','Distorted: lower <code>VOLUME</code> in the sketch.','Hum with no beep: the speaker wires are on GND.']},
  {n:'5 · Can the ESP32 reach your Mac',tag:'network',
@@ -1823,7 +1939,7 @@ const TESTS=[
   e:['The Pip server page loads on the phone.'],
   f:['Use your phone hotspot for both the Mac and the ESP32 if venue WiFi blocks devices from each other.']},
  {n:'6 · First conversation',tag:'full bot',
-  d:['In <code>ai_bot.ino</code> set <code>FACE_TEST_ONLY</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
+  d:['In <code>ai_bot.ino</code> set <code>RUN_MODE</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
   e:['<pre>ESP32 IP: 192.168.x.x\nNoise floor 62, speech threshold 187\nSent 2100 ms of audio\nServer: HTTP 200, emotion=surprised, text=...</pre>','The face goes listening, then thinking, then the speaker answers with the mouth moving, and the emotion face stays for 4 seconds.','The server terminal prints <code>heard: ...</code> and the reply.'],
   f:['Never wakes: lower <code>MIC_SHIFT</code> by 1 and restart.','Wakes on its own: raise <code>MIC_SHIFT</code> by 1, restart in a quiet room.','"Cannot reach server": recheck <code>SERVER_HOST</code> and test 5.','Server hears nothing (<code>heard: \'\'</code>): speak closer, use <code>WHISPER_MODEL=small.en</code>.']},
  {n:'7 · Modes',tag:'full bot',
@@ -1857,7 +1973,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware (main sketch)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});

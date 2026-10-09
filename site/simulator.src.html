@@ -745,19 +745,19 @@ const PHASES=[
  {t:'Phase 2 · OLED face',s:'about 10 min',items:[
   ['Wire the OLED only','VDD to 3V3, GND to GND, SCK to GPIO19, SDA to GPIO21. Unplug USB while wiring.'],
   ['Open the main firmware','Code tab &gt; "ai_bot.ino" &gt; Copy. In Arduino IDE, File &gt; New Sketch, select all, paste, save as <code>ai_bot</code>.'],
-  ['Turn on face-test mode','Near the top change <code>#define FACE_TEST_ONLY 0</code> to <code>1</code>. This skips WiFi and audio.'],
+  ['Turn on face-test mode','Near the top change <code>#define RUN_MODE 0</code> to <code>1</code>. This skips WiFi and audio. (One file does everything: 0 full bot, 1 face test, 2 mic test, 3 speaker test.)'],
   ['Upload','Click Upload. The OLED should show a star-eyed face, then cycle through all 16 emotions every 2.5 seconds.'],
   ['Try the serial keys','Tools &gt; Serial Monitor, 115200 baud. Press <code>n</code> next face, <code>p</code> previous, <code>k</code> talking mouth, then Enter.'],
   ['Screen stays black?','Swap SDA and SCL, check 3V3 and GND, and make sure the OLED address is 0x3C (the sketch uses <code>OLED_ADDR</code>).']]},
  {t:'Phase 3 · Microphone',s:'about 10 min',items:[
   ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
-  ['Open the mic test','Code tab &gt; "test_mic.ino". Paste into a new sketch and upload.'],
+  ['Switch to the mic test','Set <code>#define RUN_MODE 2</code> in <code>ai_bot.ino</code> and upload. The OLED also shows a level bar. (The separate <code>test_mic.ino</code> still works too.)'],
   ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
-  ['Too quiet or too loud?','Later you can change <code>MIC_SHIFT</code> in the main firmware: 13 is louder, 15 is quieter.']]},
+  ['Too quiet or too loud?','Change <code>MIC_SHIFT</code>: 12 is the default, 11 is twice as sensitive, 10 four times, 13 is quieter. Then upload again and watch the bar.']]},
  {t:'Phase 4 · Speaker',s:'about 10 min',items:[
   ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
   ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
-  ['Open the speaker test','Code tab &gt; "test_speaker.ino". Paste into a new sketch and upload.'],
+  ['Switch to the speaker test','Set <code>#define RUN_MODE 3</code> in <code>ai_bot.ino</code> and upload. (The separate <code>test_speaker.ino</code> still works too.)'],
   ['Listen','You should hear a soft beep-boop every 2 seconds. If nothing: check 5V and the DIN wire. If it is distorted, lower <code>VOLUME</code>.']]},
  {t:'Phase 5 · The brain on your laptop',s:'about 20 min',items:[
   ['macOS: install Homebrew (skip if you have it)','Open Terminal and run the install command from brew.sh.'],
@@ -774,13 +774,13 @@ const PHASES=[
   ['Find your Mac IP','<pre>ipconfig getifaddr en0</pre>If that prints nothing, try <code>en1</code>. This is your <code>SERVER_HOST</code>. Windows: <code>ipconfig</code>. Linux: <code>ip a</code>.'],
   ['Check the ESP32 can reach it','On your phone (same WiFi) open <code>http://YOUR-MAC-IP:8000</code>. If the Pip page loads, the ESP32 will connect too.']]},
  {t:'Phase 6 · Put it all together',s:'about 15 min',items:[
-  ['Turn face-test mode off','In <code>ai_bot.ino</code> set <code>#define FACE_TEST_ONLY 0</code>.'],
+  ['Switch to the full bot','In <code>ai_bot.ino</code> set <code>#define RUN_MODE 0</code>.'],
   ['Fill in the config','Set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> (2.4 GHz only) and <code>SERVER_HOST</code> (your laptop IP from phase 5).'],
   ['Upload the firmware','Click Upload. Open Tools &gt; Serial Monitor and set the speed to <b>115200</b>. If upload hangs on Connecting, hold BOOT.'],
   ['Watch the boot','You should see the ESP32 IP, then "Noise floor ... speech threshold ...". Stay quiet during the 1 second calibration.'],
   ['Say hello','Speak a short sentence. The face turns to listening, then thinking, then the speaker answers and the face matches the reply.'],
   ['Switch modes','Say "study mode", "mood mode", "sleep mode" or "buddy mode". Or press 1 to 4 in the Serial Monitor.'],
-  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Too loud speaker: lower <code>SPEAKER_VOLUME</code>. Picks up noise: stay closer to the mic.']]},
+  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Speaker too quiet or too loud: change <code>SPEAKER_VOLUME</code> (default 200, 300 is louder, 100 is normal) and <code>TTS_GAIN</code> on the server (default 2.0). Picks up noise: stay closer to the mic.']]},
  {t:'Phase 7 · Demo day',s:'last',items:[
   ['Use a phone hotspot','Connect both your Mac and the ESP32 to it. Update <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> once.'],
   ['Pre-test your lines','Run your 5 demo questions twice so the speech model is warm.'],
@@ -815,7 +815,7 @@ const TROUBLE=[
  ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
  ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
- ['Speaker crackles or is too loud','Lower <code>SPEAKER_VOLUME</code>. Make sure the speaker is wired to VO+ and VO−, not GND.'],
+ ['Speaker crackles, resets the board, or is too loud','Lower <code>SPEAKER_VOLUME</code> (try 150) and <code>TTS_GAIN</code> (try 1.5). A loud speaker on USB power can drop the voltage and restart the ESP32, so use a good USB port or a 5V 2A adapter. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
 ];
 $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${t[1]}</p></details>`).join('');
@@ -824,23 +824,23 @@ $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${
 /* ---------- test run ---------- */
 const TESTS=[
  {n:'0 · Before you plug anything in',tag:'code only, no wiring',
-  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code>, <code>test_mic.ino</code> and <code>test_speaker.ino</code>.','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
+  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code> (it contains all the tests).','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
   e:['Each sketch ends with "Done compiling".','The server prints "Loading speech-to-text model" and then keeps running.','<code>http://localhost:8000</code> loads and answers when you type "hello".'],
   f:['Compile error: copy the red text. <code>ESP_I2S.h</code> missing means the core is not 3.x.','No sound from the server page: check the Mac volume, and that <code>ffmpeg -version</code> works.']},
  {n:'1 · Board and upload',tag:'USB only',
-  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>FACE_TEST_ONLY</code> to <code>1</code>, click Upload.'],
+  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>RUN_MODE</code> to <code>1</code>, click Upload.'],
   e:['"Hard resetting via RTS pin… Done uploading." appears.'],
   f:['Stuck on "Connecting...": hold the <b>BOOT</b> button until it starts writing.','No port: try another cable, install the CP210x or CH340 driver, replug.','"Resource busy": close the Serial Monitor and any second Arduino window.']},
  {n:'2 · OLED faces',tag:'face test mode',
   d:['Open Tools &gt; Serial Monitor at <b>115200</b>.','Press <code>n</code> then Enter a few times. Press <code>k</code> then Enter for the talking mouth.'],
   e:['A star-eyed face first, then a new emotion every 2.5 seconds.','The face blinks, bobs slightly, and the mouth moves after <code>k</code>.','Serial prints <code>face: happy</code>, <code>face: excited</code> and so on.'],
   f:['Black screen: swap SDA and SCL, recheck 3V3 and GND.','Serial says "OLED init failed": the address may be 0x3C or 0x3D, and the wires may be loose.']},
- {n:'3 · Microphone',tag:'test_mic.ino',
-  d:['Upload <code>test_mic.ino</code> and open the Serial Monitor at 115200.','Stay quiet for 2 seconds, then clap, then talk.'],
+ {n:'3 · Microphone',tag:'RUN_MODE 2',
+  d:['Set <code>RUN_MODE</code> to <code>2</code> in <code>ai_bot.ino</code>, upload, and open the Serial Monitor at 115200 (the OLED shows a level bar too).','Stay quiet for 2 seconds, then clap, then talk.'],
   e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
-  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: later lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code>.']},
- {n:'4 · Speaker',tag:'test_speaker.ino',
-  d:['Upload <code>test_speaker.ino</code>.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (11 is twice as sensitive as 12).']},
+ {n:'4 · Speaker',tag:'RUN_MODE 3',
+  d:['Set <code>RUN_MODE</code> to <code>3</code> in <code>ai_bot.ino</code> and upload.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
   e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],
   f:['Silence: check VIN to 5V (needs USB power), DIN to GPIO22, BCLK to GPIO14, LRC to GPIO25.','Distorted: lower <code>VOLUME</code> in the sketch.','Hum with no beep: the speaker wires are on GND.']},
  {n:'5 · Can the ESP32 reach your Mac',tag:'network',
@@ -848,7 +848,7 @@ const TESTS=[
   e:['The Pip server page loads on the phone.'],
   f:['Use your phone hotspot for both the Mac and the ESP32 if venue WiFi blocks devices from each other.']},
  {n:'6 · First conversation',tag:'full bot',
-  d:['In <code>ai_bot.ino</code> set <code>FACE_TEST_ONLY</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
+  d:['In <code>ai_bot.ino</code> set <code>RUN_MODE</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
   e:['<pre>ESP32 IP: 192.168.x.x\nNoise floor 62, speech threshold 187\nSent 2100 ms of audio\nServer: HTTP 200, emotion=surprised, text=...</pre>','The face goes listening, then thinking, then the speaker answers with the mouth moving, and the emotion face stays for 4 seconds.','The server terminal prints <code>heard: ...</code> and the reply.'],
   f:['Never wakes: lower <code>MIC_SHIFT</code> by 1 and restart.','Wakes on its own: raise <code>MIC_SHIFT</code> by 1, restart in a quiet room.','"Cannot reach server": recheck <code>SERVER_HOST</code> and test 5.','Server hears nothing (<code>heard: \'\'</code>): speak closer, use <code>WHISPER_MODEL=small.en</code>.']},
  {n:'7 · Modes',tag:'full bot',
@@ -882,7 +882,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware (main sketch)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});

@@ -65,6 +65,7 @@ PRESETS = {  # base url, key env var(s), default model, model env var
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
 COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
 VOICE = os.getenv("TTS_VOICE", "en-US-AnaNeural")      # cute child-like voice
+TTS_GAIN = os.getenv("TTS_GAIN", "2.0")                # voice loudness: 1.0 = normal, 2.0 = twice as loud (a limiter prevents clipping)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en")  # tiny.en is faster, small.en is more accurate
 SAMPLE_RATE = 16000
 
@@ -341,7 +342,7 @@ async def speak(text: str) -> bytes:
         if chunk["type"] == "audio":
             mp3 += chunk["data"]
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
+        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
     )
     pcm, _ = await proc.communicate(bytes(mp3))

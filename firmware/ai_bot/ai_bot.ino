@@ -15,6 +15,9 @@
     MAX98357A VIN->5V   GND->GND  BCLK->GPIO14  LRC->GPIO25  DIN->GPIO22  (speaker on + / -)
     OLED      VDD->3V3  GND->GND  SCK(SCL)->GPIO19  SDA->GPIO21
 
+  ONE FILE does everything. Pick what it does with RUN_MODE below:
+    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test
+
   Serial Monitor (115200) commands:
     n / p = next / previous emotion   h = happy   l = listening   t = thinking
     k = toggle "talking mouth" demo   1..4 = switch mode (Buddy, Study, Mood, Sleep)
@@ -32,9 +35,9 @@ const char* WIFI_SSID   = "YOUR_WIFI_NAME";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 const char* SERVER_HOST = "192.168.1.50";   // your laptop's IP, where server.py runs
 const int   SERVER_PORT = 8000;
-#define FACE_TEST_ONLY 0     // 1 = only test the OLED faces (no WiFi, no audio)
-#define SPEAKER_VOLUME 70    // percent, 0..100 (raise slowly, the amp is loud)
-#define MIC_SHIFT 14         // mic gain: lower = louder (try 13..16)
+#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test
+#define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
+#define MIC_SHIFT 12         // mic gain: lower = louder. 14 = quiet, 12 = 4x louder, 11 = 8x, 10 = 16x
 // ======================================================
 
 // ---------- pins (from your Cirkit circuit) ----------
@@ -322,6 +325,62 @@ void playSilence(int ms) {
   for (int i = 0; i < ms / 10; i++) i2s.write((uint8_t*)z, sizeof(z));
 }
 
+// Volume with a soft limiter: loud peaks are squeezed instead of cut off, so higher volume stays clean.
+inline int32_t amplify(int16_t s) {
+  int32_t v = ((int32_t)s * SPEAKER_VOLUME) / 100;
+  const int32_t knee = 20000;
+  if (v > knee) v = knee + (v - knee) / 4;
+  else if (v < -knee) v = -knee + (v + knee) / 4;
+  return constrain(v, -32767, 32767);
+}
+
+void playTone(float freq, int ms) {
+  static int32_t out[2 * 160];
+  static float phase = 0;
+  int total = SAMPLE_RATE * ms / 1000;
+  for (int done = 0; done < total; done += 160) {
+    for (int i = 0; i < 160; i++) {
+      int32_t v = amplify((int16_t)(sin(phase) * 8000));
+      phase += 2 * PI * freq / SAMPLE_RATE;
+      if (phase > 2 * PI) phase -= 2 * PI;
+      out[2 * i] = out[2 * i + 1] = v << 16;
+    }
+    i2s.write((uint8_t*)out, sizeof(out));
+  }
+}
+
+// RUN_MODE 2: shows the microphone level on the OLED and in the Serial Monitor
+void micMeter() {
+  static unsigned long last = 0;
+  static int peak = 0;
+  size_t n = readMono(frameBuf, FRAME);
+  int level = rmsOf(frameBuf, n);
+  peak = max(level, (int)(peak * 0.97f));
+  if (millis() - last < 100) return;
+  last = millis();
+  Serial.printf("level %5d  peak %5d  ", level, peak);
+  for (int i = 0; i < min(level / 100, 50); i++) Serial.print('#');
+  Serial.println("");
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(W);
+  display.setCursor(0, 0); display.print("MIC TEST: talk or clap");
+  display.drawRect(2, 20, 124, 16, W);
+  display.fillRect(4, 22, constrain(level / 40, 0, 120), 12, W);
+  display.setCursor(0, 44); display.print(String("level ") + level);
+  display.setCursor(0, 54); display.print(String("peak  ") + peak);
+  display.display();
+}
+
+// RUN_MODE 3: two beeps every 2 seconds
+void speakerTest() {
+  message("SPEAKER TEST", "beep boop");
+  Serial.println("beep");
+  playTone(660, 150);
+  playTone(880, 250);
+  playSilence(100);
+  delay(2000);
+}
+
 Emotion emotionFromName(String s) {
   s.toLowerCase();
   for (int i = 0; i < EMO_COUNT; i++) if (s == EMO_NAMES[i]) return (Emotion)i;
@@ -367,12 +426,12 @@ void receiveAndPlay(WiFiClient& c) {
     int16_t* s = (int16_t*)buf;
     float e = 0;
     for (int i = 0; i < ns; i++) {
-      int32_t v = ((int32_t)s[i] * SPEAKER_VOLUME) / 100;
+      int32_t v = amplify(s[i]);
       e += abs(v);
       out[2 * i] = out[2 * i + 1] = v << 16;
     }
     i2s.write((uint8_t*)out, ns * 8);
-    talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / 5000.0f);
+    talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
     if (have & 1) { buf[0] = buf[have - 1]; have = 1; } else have = 0;
     if (millis() - lastDraw > 90) { animate(); drawFace(); lastDraw = millis(); }
   }
@@ -435,7 +494,7 @@ void handleSerial() {
     else if (ch == 'n') setFace((Emotion)((emo + 1) % EMO_COUNT));
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
-    else if (ch >= '1' && ch <= '4' && !FACE_TEST_ONLY) setServerMode(ch - '1');
+    else if (ch >= '1' && ch <= '4' && RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
 }
@@ -452,22 +511,29 @@ void setup() {
   randomSeed(micros());
   setFace(STARRY, 1500); drawFace();
 
-#if FACE_TEST_ONLY
+#if RUN_MODE == 1
   Serial.println("FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
 #else
+#if RUN_MODE == 0
   message("Connecting WiFi...", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
   Serial.println("\nESP32 IP: " + WiFi.localIP().toString());
-
+#endif
   i2s.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);
   if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
     Serial.println("I2S init failed");
     message("I2S failed", "check wiring");
     while (true) delay(1000);
   }
+#if RUN_MODE == 0
   calibrate();
+#elif RUN_MODE == 2
+  Serial.println("MIC TEST: talk or clap, the bar should grow.");
+#else
+  Serial.println("SPEAKER TEST: you should hear a beep every 2 seconds.");
+#endif
 #endif
   lastActivity = millis();
   setFace(HAPPY);
@@ -478,11 +544,15 @@ void loop() {
   animate();
   static unsigned long lastDraw = 0, lastCycle = 0;
 
-#if FACE_TEST_ONLY
+#if RUN_MODE == 1
   if (millis() - lastCycle > 2500 && !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); Serial.printf("face: %s\n", EMO_NAMES[emo]); }
   if (mouthDemo) talkAmp = (sin(millis() / 90.0) + 1) / 2;
   drawFace();
   delay(50);
+#elif RUN_MODE == 2
+  micMeter();
+#elif RUN_MODE == 3
+  speakerTest();
 #else
   size_t n = readMono(frameBuf, FRAME);
   memcpy(preRing[preIdx], frameBuf, FRAME * 2);
