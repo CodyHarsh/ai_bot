@@ -497,7 +497,7 @@ async def speak(text: str) -> bytes:
         return b""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le",
+            "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95:level=disabled", "-f", "s16le",
             "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
@@ -660,6 +660,23 @@ async def devlog(request: Request):
         if line.strip():
             (log_esp.error if " ERR " in line else log_esp.info)(line.strip())
     return PlainTextResponse("ok\n")
+
+
+@app.get("/api/say")  # raw voice for the ESP32 speaker test sketch
+async def say(text: str = "Hello, I am Pip. This is a speaker test."):
+    log_net.info("/api/say: %r", text[:80])
+    audio = await speak(text[:200])
+    if not audio:
+        return PlainTextResponse("the server could not make the voice, see the server terminal (ffmpeg or internet)\n", status_code=500)
+    return Response(audio, media_type="application/octet-stream", headers={"X-Text": text.encode("ascii", "ignore").decode()[:200]})
+
+
+@app.get("/api/say.wav")  # the same voice as a normal sound file: open it in your browser to check the Mac makes sound
+async def say_wav(text: str = "Hello, I am Pip. This is a speaker test."):
+    audio = await speak(text[:200])
+    if not audio:
+        return PlainTextResponse("the server could not make the voice, see the server terminal (ffmpeg or internet)\n", status_code=500)
+    return Response(to_wav(audio), media_type="audio/wav")
 
 
 @app.get("/api/logs")
