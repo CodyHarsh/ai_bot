@@ -1,0 +1,777 @@
+<title>Pip AI Bot Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+/* Layout: bench-style app. Header, tab bar, one panel at a time. Simulator = device left, controls right. */
+:root{
+  --bg:#f3f5f2; --panel:#ffffff; --ink:#15201c; --muted:#5a6a63; --line:#d5ddd8;
+  --oled:#0a8fb0; --oled-bg:#04100f; --accent:#d9730d; --good:#1b8a4b; --warn:#b4540a; --code:#eef2ef;
+  --display:'Bricolage Grotesque','Segoe UI',sans-serif; --body:'IBM Plex Sans','Segoe UI',sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c1310; --panel:#131d19; --ink:#e4eee9; --muted:#8fa39a; --line:#26342e;
+  --oled:#79e7ff; --oled-bg:#020807; --accent:#ffb347; --good:#4fd18b; --warn:#ffb347; --code:#0a110e; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c1310; --panel:#131d19; --ink:#e4eee9; --muted:#8fa39a; --line:#26342e;
+  --oled:#79e7ff; --oled-bg:#020807; --accent:#ffb347; --good:#4fd18b; --warn:#ffb347; --code:#0a110e; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);margin:0;padding-inline:16px;padding-block:20px}
+.wrap{max-width:1100px;margin:auto}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
+h1{font-size:clamp(26px,5vw,38px);letter-spacing:-.02em}
+h2{font-size:22px;margin-bottom:10px}
+h3{font-size:16px;margin-bottom:6px}
+.sub{color:var(--muted);margin:6px 0 18px;max-width:70ch}
+.note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);padding:10px 14px;border-radius:6px;font-size:13.5px;color:var(--muted);margin-bottom:18px}
+.note b{color:var(--ink)}
+nav{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:20px}
+nav button{font:500 14px var(--body);background:none;border:0;color:var(--muted);padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px}
+@media(max-width:820px){.grid{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.board{background:#0f5a43;border-radius:10px;padding:16px;border:1px solid #0a3d2e;box-shadow:inset 0 0 0 2px #14705a}
+.bezel{background:#000;border-radius:6px;padding:10px;border:2px solid #222}
+canvas{display:block;width:100%;height:auto;image-rendering:pixelated;background:var(--oled-bg);border-radius:3px}
+.hw{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:14px}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap}
+.pb{background:#e9e4d6;color:#222;border:0;border-radius:6px;padding:8px 12px;font:500 12px var(--mono);cursor:pointer;box-shadow:0 3px 0 #8a8574}
+.pb:active{transform:translateY(2px);box-shadow:0 1px 0 #8a8574}
+.pb small{display:block;color:#666;font-size:10px}
+.led{display:inline-flex;gap:6px;align-items:center;font:11px var(--mono);color:#cfeee2}
+.led i{width:9px;height:9px;border-radius:50%;background:#2c4a3f;display:inline-block}
+.led i.on{background:#6bffa8;box-shadow:0 0 8px #6bffa8}
+.led i.buz{background:#2c4a3f}.led i.buz.on{background:#ffcf5a;box-shadow:0 0 8px #ffcf5a}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.chip{font:500 13px var(--body);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);color:#1a1005;border-color:var(--accent)}
+.lbl{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 6px}
+.row{display:flex;gap:8px}
+input[type=text]{flex:1;min-width:0;font:15px var(--body);padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.go{font:500 14px var(--body);background:var(--accent);color:#1a1005;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+.log{background:var(--code);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);height:210px;overflow:auto;padding:10px;white-space:pre-wrap;word-break:break-word}
+.log .t{color:var(--muted)}.log .ok{color:var(--good)}.log .w{color:var(--warn)}
+pre.code{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto;font:12.5px/1.5 var(--mono);max-height:560px;margin:0;tab-size:2}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+td code,li code,p code{font:12.5px var(--mono);background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.steps{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px}
+.steps li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px}
+.steps input{width:20px;height:20px;margin-top:2px;accent-color:var(--accent)}
+.steps li.done{opacity:.55}
+.steps p{margin:4px 0 0}
+.steps ul{margin:6px 0 0;padding-left:18px}
+.btn2{font:500 13px var(--body);background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+details{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:8px}
+summary{cursor:pointer;font-weight:500}
+svg text{font-family:var(--mono);font-size:12px;fill:var(--ink)}
+svg .dim{fill:var(--muted);font-size:11px}
+.w-pwr{stroke:#e5484d}.w-gnd{stroke:var(--muted)}.w-sda{stroke:#3b82f6}.w-scl{stroke:#eab308}.w-sig{stroke:#22a06b}
+svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.hdr{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <div class="hdr">
+    <div>
+      <h1>Pip, the AI bot with a face</h1>
+      <p class="sub">ESP32 + OLED screen that shows emotions and answers live through an LLM. Try the simulator, follow the build steps, paste the firmware.</p>
+    </div>
+  </div>
+  <div class="note"><b>Check against your Cirkit circuit.</b> I could not open the Cirkit Designer link from my environment, so this build uses the standard parts for this kind of bot: ESP32 DevKit, 0.96" SSD1306 I2C OLED, 3 push buttons and a buzzer. If your pins differ, change the <code>PIN_*</code> lines at the top of the sketch and the table in the Wiring tab.</div>
+
+  <nav role="tablist" id="tabs">
+    <button role="tab" data-t="sim" aria-selected="true">Simulator</button>
+    <button role="tab" data-t="wire" aria-selected="false">Wiring</button>
+    <button role="tab" data-t="steps" aria-selected="false">Build steps</button>
+    <button role="tab" data-t="code" aria-selected="false">Firmware</button>
+    <button role="tab" data-t="llm" aria-selected="false">Connect an LLM</button>
+  </nav>
+
+  <!-- SIMULATOR -->
+  <section id="p-sim">
+    <div class="grid">
+      <div class="board">
+        <div class="bezel"><canvas id="oled" width="640" height="320" aria-label="Simulated 128 by 64 OLED screen"></canvas></div>
+        <div class="hw">
+          <div class="btnrow">
+            <button class="pb" id="b1">BTN1<small>GPIO18 · mode</small></button>
+            <button class="pb" id="b2">BTN2<small>GPIO19 · poke</small></button>
+            <button class="pb" id="b3">BTN3<small>GPIO23 · ask</small></button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <span class="led"><i id="ledwifi"></i>WiFi</span>
+            <span class="led"><i class="buz" id="ledbuz"></i>Buzzer GPIO25</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="lbl" style="margin-top:0">Mode (changes the bot's personality)</div>
+        <div class="chips" id="modes"></div>
+        <div class="lbl">Force an emotion</div>
+        <div class="chips" id="emos"></div>
+        <div class="lbl">Talk to Pip (the phone web page does this on the real bot)</div>
+        <form class="row" id="f"><input type="text" id="q" value="Tell me a fun fact" autocomplete="off" aria-label="Message to the bot"><button class="go" type="submit">Send</button></form>
+        <div class="chips" style="margin-top:8px" id="quick"></div>
+        <div class="lbl">Serial monitor (115200)</div>
+        <div class="log" id="log" aria-live="polite"></div>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:14px">The simulator redraws the face with the same shapes the firmware draws. Replies here come from a small built-in rule set so it runs offline; on the real bot the same JSON comes back from the LLM.</p>
+  </section>
+
+  <!-- WIRING -->
+  <section id="p-wire" hidden>
+    <h2>Wiring</h2>
+    <div class="card scroll">
+      <svg viewBox="0 0 760 450" width="760" role="img" aria-label="Wiring diagram" style="max-width:none">
+        <rect x="40" y="30" width="160" height="400" rx="8" fill="none" stroke="var(--ink)" stroke-width="2"/>
+        <text x="60" y="56" style="font-weight:500">ESP32 DevKit</text>
+        <text x="60" y="72" class="dim">USB powers everything</text>
+        <rect x="80" y="400" width="80" height="26" rx="4" fill="none" stroke="var(--muted)"/><text x="94" y="417" class="dim">USB-C</text>
+
+        <rect x="520" y="40" width="190" height="190" rx="8" fill="none" stroke="var(--ink)" stroke-width="2"/>
+        <rect x="560" y="100" width="130" height="66" fill="var(--oled-bg)" stroke="var(--muted)"/>
+        <text x="575" y="138" style="fill:var(--oled)">SSD1306</text>
+        <text x="535" y="60" style="font-weight:500">OLED 128x64 I2C</text>
+
+        <!-- I2C + power: straight lines -->
+        <path class="wire w-pwr" d="M200 90H520"/><circle cx="200" cy="90" r="4" fill="var(--ink)"/><circle cx="520" cy="90" r="4" fill="var(--ink)"/>
+        <path class="wire w-gnd" d="M200 130H520"/><circle cx="200" cy="130" r="4" fill="var(--ink)"/><circle cx="520" cy="130" r="4" fill="var(--ink)"/>
+        <path class="wire w-sda" d="M200 170H520"/><circle cx="200" cy="170" r="4" fill="var(--ink)"/><circle cx="520" cy="170" r="4" fill="var(--ink)"/>
+        <path class="wire w-scl" d="M200 210H520"/><circle cx="200" cy="210" r="4" fill="var(--ink)"/><circle cx="520" cy="210" r="4" fill="var(--ink)"/>
+        <text x="206" y="84" class="dim">3V3</text><text x="206" y="124" class="dim">GND</text><text x="206" y="164" class="dim">GPIO21</text><text x="206" y="204" class="dim">GPIO22</text>
+        <text x="470" y="84" class="dim" text-anchor="end">VCC</text><text x="470" y="124" class="dim" text-anchor="end">GND</text><text x="470" y="164" class="dim" text-anchor="end">SDA</text><text x="470" y="204" class="dim" text-anchor="end">SCL</text>
+
+        <!-- buttons -->
+        <g id="btns"></g>
+        <!-- buzzer -->
+        <path class="wire w-sig" d="M200 390H480"/><circle cx="200" cy="390" r="4" fill="var(--ink)"/>
+        <rect x="480" y="372" width="60" height="36" rx="6" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="489" y="395">BUZ +</text>
+        <path class="wire w-gnd" d="M540 390H640"/>
+        <text x="206" y="384" class="dim">GPIO25</text>
+        <!-- ground rail -->
+        <path class="wire w-gnd" d="M640 270V390"/>
+        <path class="wire w-gnd" d="M200 420H640V390"/><circle cx="200" cy="420" r="4" fill="var(--ink)"/><text x="206" y="414" class="dim">GND</text>
+        <text x="650" y="335" class="dim">GND rail</text>
+      </svg>
+    </div>
+    <div class="card scroll" style="margin-top:16px">
+      <table>
+        <thead><tr><th>Part pin</th><th>ESP32 pin</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>OLED VCC</td><td><code>3V3</code></td><td>The OLED runs at 3.3 V. Do not use 5 V on a 3.3 V module.</td></tr>
+          <tr><td>OLED GND</td><td><code>GND</code></td><td>Common ground.</td></tr>
+          <tr><td>OLED SDA</td><td><code>GPIO21</code></td><td>Default I2C data pin.</td></tr>
+          <tr><td>OLED SCL</td><td><code>GPIO22</code></td><td>Default I2C clock pin.</td></tr>
+          <tr><td>BTN1 · next mode</td><td><code>GPIO18</code> to GND</td><td>Uses the internal pull-up, so no resistor needed.</td></tr>
+          <tr><td>BTN2 · poke / random emotion</td><td><code>GPIO19</code> to GND</td><td>Same as above.</td></tr>
+          <tr><td>BTN3 · ask a demo question</td><td><code>GPIO23</code> to GND</td><td>Same as above.</td></tr>
+          <tr><td>Buzzer +</td><td><code>GPIO25</code></td><td>Passive buzzer, driven with a tone. Buzzer − goes to GND.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:12px">Pin order on OLED modules varies between sellers (GND-VCC-SCL-SDA is common). Read the silkscreen on yours, not the order in the drawing.</p>
+  </section>
+
+  <!-- STEPS -->
+  <section id="p-steps" hidden>
+    <h2>Build steps from a fresh Arduino IDE</h2>
+    <p class="sub">Tick each step as you go. Your progress is saved in this browser.</p>
+    <ol class="steps" id="stepList"></ol>
+    <h2 style="margin-top:28px">If something goes wrong</h2>
+    <details><summary>Upload fails with "Failed to connect to ESP32"</summary><p>Hold the BOOT button on the board while the IDE says "Connecting...", release when it starts writing. Also try a different USB cable; many cables are charge-only.</p></details>
+    <details><summary>The port does not show up in Tools &gt; Port</summary><p>Install the USB driver for your board's chip (CP2102 or CH340, printed on the small chip near the USB port), then replug.</p></details>
+    <details><summary>Screen stays black</summary><p>Swap SDA and SCL, check 3V3 and GND, and run an I2C scanner sketch. If it reports <code>0x3C</code> the code is right; if it reports <code>0x3D</code>, change <code>OLED_ADDR</code>.</p></details>
+    <details><summary>"HTTP -1" or "HTTP 401" in the serial monitor</summary><p>-1 means no internet or TLS failure (ESP32 only joins 2.4 GHz WiFi, and some hackathon networks block devices; use your phone hotspot). 401 means the API key is wrong. 429 means rate limit or no credit.</p></details>
+    <details><summary>Compile error: ledcAttach not declared</summary><p>You have ESP32 core 2.x. Update to core 3.x in Boards Manager, or replace the buzzer function with <code>ledcSetup</code>, <code>ledcAttachPin</code> and <code>ledcWriteTone</code>.</p></details>
+  </section>
+
+  <!-- CODE -->
+  <section id="p-code" hidden>
+    <h2>Firmware</h2>
+    <p class="sub">Paste into a new sketch, fill in the three values at the top, upload. It is also saved in the repo as <code>ai_bot/ai_bot.ino</code>.</p>
+    <div class="row" style="margin-bottom:10px"><button class="btn2" id="copy">Copy sketch</button><span id="copied" class="sub" style="margin:0;align-self:center"></span></div>
+    <pre class="code" id="ino">/*
+  AI Bot - ESP32 + SSD1306 OLED face + LLM (hackathon build)
+
+  Libraries (Library Manager):
+    - Adafruit SSD1306
+    - Adafruit GFX Library
+    - ArduinoJson (version 7.x)
+  Board: "ESP32 Dev Module"
+
+  Wiring:
+    OLED  VCC-&gt;3V3  GND-&gt;GND  SDA-&gt;GPIO21  SCL-&gt;GPIO22
+    BTN1 (next mode)  GPIO18 -&gt; GND
+    BTN2 (poke)       GPIO19 -&gt; GND
+    BTN3 (ask/demo)   GPIO23 -&gt; GND
+    Buzzer (+)        GPIO25, (-) GND
+*/
+
+#include &lt;WiFi.h&gt;
+#include &lt;WiFiClientSecure.h&gt;
+#include &lt;HTTPClient.h&gt;
+#include &lt;WebServer.h&gt;
+#include &lt;ArduinoJson.h&gt;
+#include &lt;Wire.h&gt;
+#include &lt;Adafruit_GFX.h&gt;
+#include &lt;Adafruit_SSD1306.h&gt;
+
+// ---------- CONFIG: edit these ----------
+const char* WIFI_SSID = "YOUR_WIFI_NAME";
+const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* API_KEY   = "YOUR_ANTHROPIC_API_KEY";   // never commit a real key
+const char* MODEL     = "claude-haiku-5-5";         // fast + cheap, good for a bot
+// ----------------------------------------
+
+#define SCREEN_W 128
+#define SCREEN_H 64
+#define OLED_ADDR 0x3C
+#define PIN_SDA 21
+#define PIN_SCL 22
+#define PIN_BTN_MODE 18
+#define PIN_BTN_POKE 19
+#define PIN_BTN_ASK  23
+#define PIN_BUZZER   25
+
+Adafruit_SSD1306 display(SCREEN_W, SCREEN_H, &amp;Wire, -1);
+WebServer server(80);
+
+enum Emotion { HAPPY, SAD, ANGRY, SURPRISED, SLEEPY, LOVE, THINKING, WINK };
+const char* EMO_NAMES[] = {"happy", "sad", "angry", "surprised", "sleepy", "love", "thinking", "wink"};
+
+enum Mode { BUDDY, STUDY, MOOD, SLEEP };
+const char* MODE_NAMES[] = {"Buddy", "Study", "Mood", "Sleep"};
+const char* MODE_PROMPTS[] = {
+  "You are a cheerful, curious desk buddy robot.",
+  "You are a calm study coach. Give one short, practical tip or answer.",
+  "You are an empathetic mood pet. React to the user's feelings warmly.",
+  "You are a sleepy bedtime bot. Speak softly and help the user wind down."
+};
+
+Mode mode = BUDDY;
+Emotion emotion = HAPPY;
+String replyText = "";
+unsigned long showTextUntil = 0;
+unsigned long lastBlink = 0, blinkUntil = 0, modeBannerUntil = 0;
+int lookX = 0;
+
+// ---------- buzzer ----------
+void beep(int freq, int ms) {
+  ledcAttach(PIN_BUZZER, freq, 8);   // core 3.x API
+  ledcWriteTone(PIN_BUZZER, freq);
+  delay(ms);
+  ledcWriteTone(PIN_BUZZER, 0);
+}
+
+void emotionSound(Emotion e) {
+  switch (e) {
+    case HAPPY:     beep(880, 80); beep(1175, 120); break;
+    case SAD:       beep(440, 150); beep(330, 250); break;
+    case ANGRY:     beep(200, 250); break;
+    case SURPRISED: beep(1400, 100); break;
+    case LOVE:      beep(660, 100); beep(880, 100); beep(1040, 150); break;
+    default: break;
+  }
+}
+
+// ---------- face drawing ----------
+void heart(int x, int y) {
+  display.fillCircle(x - 5, y, 6, WHITE);
+  display.fillCircle(x + 5, y, 6, WHITE);
+  display.fillTriangle(x - 11, y + 2, x + 11, y + 2, x, y + 14, WHITE);
+}
+
+void eyeBox(int cx, int cy, int h) {
+  display.fillRoundRect(cx - 12, cy - h / 2, 24, h, 7, WHITE);
+}
+
+void drawFace(Emotion e, bool blink) {
+  display.clearDisplay();
+  int lx = 34 + lookX, rx = 94 + lookX, ey = 24;
+
+  if (blink &amp;&amp; e != SLEEPY &amp;&amp; e != LOVE) {
+    display.fillRoundRect(lx - 12, ey - 1, 24, 3, 1, WHITE);
+    display.fillRoundRect(rx - 12, ey - 1, 24, 3, 1, WHITE);
+  } else switch (e) {
+    case HAPPY:
+      display.fillCircle(lx, ey + 3, 11, WHITE); display.fillCircle(lx, ey + 10, 11, BLACK);
+      display.fillCircle(rx, ey + 3, 11, WHITE); display.fillCircle(rx, ey + 10, 11, BLACK);
+      break;
+    case SAD:
+      eyeBox(lx, ey, 26); eyeBox(rx, ey, 26);
+      display.fillTriangle(lx - 14, ey - 14, lx + 14, ey - 14, lx - 14, ey - 1, BLACK);
+      display.fillTriangle(rx - 14, ey - 14, rx + 14, ey - 14, rx + 14, ey - 1, BLACK);
+      break;
+    case ANGRY:
+      eyeBox(lx, ey, 26); eyeBox(rx, ey, 26);
+      display.fillTriangle(lx - 14, ey - 14, lx + 14, ey - 14, lx + 14, ey - 1, BLACK);
+      display.fillTriangle(rx - 14, ey - 14, rx + 14, ey - 14, rx - 14, ey - 1, BLACK);
+      break;
+    case SURPRISED:
+      display.fillCircle(lx, ey, 14, WHITE); display.fillCircle(rx, ey, 14, WHITE);
+      display.fillCircle(lx, ey, 5, BLACK);  display.fillCircle(rx, ey, 5, BLACK);
+      break;
+    case SLEEPY:
+      display.fillRoundRect(lx - 12, ey + 2, 24, 3, 1, WHITE);
+      display.fillRoundRect(rx - 12, ey + 2, 24, 3, 1, WHITE);
+      display.setTextSize(1); display.setTextColor(WHITE);
+      display.setCursor(108, 4);  display.print("z");
+      display.setCursor(114, 12); display.print("Z");
+      break;
+    case LOVE:
+      heart(lx, ey - 2); heart(rx, ey - 2);
+      break;
+    case THINKING:
+      eyeBox(lx, ey - 2, 22); eyeBox(rx, ey - 2, 22);
+      display.fillCircle(lx + 4, ey - 8, 4, BLACK);
+      display.fillCircle(rx + 4, ey - 8, 4, BLACK);
+      break;
+    case WINK:
+      display.fillCircle(lx, ey + 3, 11, WHITE); display.fillCircle(lx, ey + 10, 11, BLACK);
+      eyeBox(rx, ey, 26);
+      break;
+  }
+
+  // mouth
+  switch (e) {
+    case HAPPY: case WINK: case LOVE:
+      display.fillCircle(64, 46, 12, WHITE); display.fillCircle(64, 41, 12, BLACK); break;
+    case SAD:
+      display.fillCircle(64, 58, 12, WHITE); display.fillCircle(64, 63, 12, BLACK); break;
+    case ANGRY:
+      display.fillRect(52, 52, 24, 3, WHITE); break;
+    case SURPRISED:
+      display.drawCircle(64, 52, 6, WHITE); break;
+    case THINKING:
+      display.fillCircle(58, 52, 2, WHITE); display.fillCircle(66, 52, 2, WHITE);
+      display.fillCircle(74, 52, 2, WHITE); break;
+    case SLEEPY:
+      display.drawFastHLine(58, 52, 12, WHITE); break;
+  }
+
+  // mode banner (top-left, shows for 1.5 s after a mode change)
+  if (millis() &lt; modeBannerUntil) {
+    display.fillRect(0, 0, 60, 10, BLACK);
+    display.setTextSize(1); display.setTextColor(WHITE);
+    display.setCursor(0, 1); display.print(MODE_NAMES[mode]);
+  }
+  display.display();
+}
+
+void drawText(const String&amp; t) {
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.print(t);
+  display.display();
+}
+
+// ---------- LLM ----------
+bool askLLM(const String&amp; question) {
+  WiFiClientSecure client;
+  client.setInsecure();                       // hackathon shortcut; pin the cert for production
+  HTTPClient http;
+  http.setTimeout(20000);
+  if (!http.begin(client, "https://api.anthropic.com/v1/messages")) return false;
+  http.addHeader("content-type", "application/json");
+  http.addHeader("x-api-key", API_KEY);
+  http.addHeader("anthropic-version", "2023-06-01");
+
+  String sys = String(MODE_PROMPTS[mode]) +
+    " You live inside a tiny robot with a 128x64 OLED face. Reply ONLY with JSON: "
+    "{\"emotion\":\"&lt;happy|sad|angry|surprised|sleepy|love|thinking|wink&gt;\",\"text\":\"&lt;max 80 chars&gt;\"}";
+
+  JsonDocument req;
+  req["model"] = MODEL;
+  req["max_tokens"] = 150;
+  req["system"] = sys;
+  JsonArray msgs = req["messages"].to&lt;JsonArray&gt;();
+  JsonObject m = msgs.add&lt;JsonObject&gt;();
+  m["role"] = "user";
+  m["content"] = question;
+  String body; serializeJson(req, body);
+
+  int code = http.POST(body);
+  Serial.printf("LLM HTTP %d\n", code);
+  if (code != 200) { http.end(); return false; }
+
+  JsonDocument res;
+  DeserializationError err = deserializeJson(res, http.getString());
+  http.end();
+  if (err) return false;
+
+  String raw = res["content"][0]["text"] | "";
+  int a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+  if (a &lt; 0 || b &lt; a) { replyText = raw.substring(0, 80); emotion = HAPPY; return true; }
+
+  JsonDocument out;
+  if (deserializeJson(out, raw.substring(a, b + 1))) return false;
+  replyText = String((const char*)(out["text"] | "..."));
+  String emo = out["emotion"] | "happy";
+  emotion = HAPPY;
+  for (int i = 0; i &lt; 8; i++) if (emo == EMO_NAMES[i]) emotion = (Emotion)i;
+  return true;
+}
+
+void respond(const String&amp; q) {
+  drawFace(THINKING, false);
+  if (askLLM(q)) {
+    drawFace(emotion, false);
+    emotionSound(emotion);
+    delay(1500);
+    drawText(replyText);
+    showTextUntil = millis() + 5000;
+  } else {
+    emotion = SAD; replyText = "Oops, network error";
+    drawFace(SAD, false);
+    showTextUntil = 0;
+  }
+}
+
+// ---------- web UI (open http://&lt;esp32-ip&gt;/ on your phone) ----------
+const char PAGE[] PROGMEM = R"HTML(
+&lt;!doctype html&gt;&lt;meta name=viewport content="width=device-width,initial-scale=1"&gt;
+&lt;body style="font-family:sans-serif;max-width:480px;margin:auto;padding:16px"&gt;
+&lt;h2&gt;AI Bot&lt;/h2&gt;
+&lt;select id=m&gt;&lt;option&gt;Buddy&lt;option&gt;Study&lt;option&gt;Mood&lt;option&gt;Sleep&lt;/select&gt;
+&lt;input id=q style="width:100%;padding:10px;margin:8px 0" placeholder="Say something..."&gt;
+&lt;button onclick=ask()&gt;Send&lt;/button&gt; &lt;button onclick=mic()&gt;Mic&lt;/button&gt;
+&lt;p id=a&gt;&lt;/p&gt;
+&lt;script&gt;
+async function ask(){
+  const q=document.getElementById('q').value, m=document.getElementById('m').selectedIndex;
+  document.getElementById('a').textContent='thinking...';
+  const r=await fetch('/ask?m='+m+'&amp;q='+encodeURIComponent(q)); const j=await r.json();
+  document.getElementById('a').textContent=j.emotion+': '+j.text;
+}
+function mic(){
+  const R=window.SpeechRecognition||window.webkitSpeechRecognition; if(!R){alert('Use Chrome');return}
+  const s=new R(); s.onresult=e=&gt;{document.getElementById('q').value=e.results[0][0].transcript;ask()}; s.start();
+}
+&lt;/script&gt;&lt;/body&gt;
+)HTML";
+
+void handleRoot() { server.send_P(200, "text/html", PAGE); }
+
+void handleAsk() {
+  int m = server.arg("m").toInt();
+  if (m &gt;= 0 &amp;&amp; m &lt; 4) mode = (Mode)m;
+  respond(server.arg("q"));
+  JsonDocument d;
+  d["emotion"] = EMO_NAMES[emotion];
+  d["text"] = replyText;
+  String s; serializeJson(d, s);
+  server.send(200, "application/json", s);
+}
+
+// ---------- setup / loop ----------
+bool pressed(int pin) {
+  if (digitalRead(pin) == LOW) { delay(30); while (digitalRead(pin) == LOW) delay(5); return true; }
+  return false;
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_BTN_MODE, INPUT_PULLUP);
+  pinMode(PIN_BTN_POKE, INPUT_PULLUP);
+  pinMode(PIN_BTN_ASK, INPUT_PULLUP);
+  Wire.begin(PIN_SDA, PIN_SCL);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("OLED not found - check wiring / address 0x3C");
+    while (true) delay(1000);
+  }
+  drawText("Connecting WiFi...");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
+  Serial.println("\nIP: " + WiFi.localIP().toString());
+  drawText("Open in browser:\n" + WiFi.localIP().toString());
+  delay(3000);
+  server.on("/", handleRoot);
+  server.on("/ask", handleAsk);
+  server.begin();
+  modeBannerUntil = millis() + 1500;
+}
+
+void loop() {
+  server.handleClient();
+
+  if (pressed(PIN_BTN_MODE)) {
+    mode = (Mode)((mode + 1) % 4);
+    emotion = (mode == SLEEP) ? SLEEPY : (mode == STUDY ? THINKING : HAPPY);
+    modeBannerUntil = millis() + 1500;
+    showTextUntil = 0;
+    beep(1000, 40);
+  }
+  if (pressed(PIN_BTN_POKE)) {
+    emotion = (Emotion)random(0, 8);
+    emotionSound(emotion);
+    showTextUntil = 0;
+  }
+  if (pressed(PIN_BTN_ASK)) {
+    const char* demo[] = {"Tell me a fun fact", "Give me a study tip", "I had a rough day", "Say goodnight"};
+    respond(demo[mode]);
+  }
+
+  if (millis() &lt; showTextUntil) return;   // keep reply text on screen
+
+  // idle animation: blink + look around
+  unsigned long now = millis();
+  if (now - lastBlink &gt; 3200) { lastBlink = now; blinkUntil = now + 140; lookX = random(-6, 7); }
+  drawFace(emotion, now &lt; blinkUntil);
+  delay(40);
+}
+</pre>
+  </section>
+
+  <!-- LLM -->
+  <section id="p-llm" hidden>
+    <h2>Connecting the bot to an LLM</h2>
+    <p class="sub">The ESP32 sends the question over HTTPS and asks the model to answer in a tiny JSON format. The emotion field picks the face, the text field goes on the screen.</p>
+    <div class="card" style="margin-bottom:16px">
+      <pre class="mermaid">
+flowchart LR
+  P[Phone web page<br/>type or speak] -->|/ask?q=...| E[ESP32]
+  B[Button 3] --> E
+  E -->|HTTPS POST| L[LLM API]
+  L -->|emotion + text JSON| E
+  E --> O[OLED face + text]
+  E --> Z[Buzzer]
+      </pre>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3>Prompt contract</h3>
+        <p>Each mode has its own system prompt, and every prompt ends with the same rule so the answer is easy to parse.</p>
+        <pre class="code">{"emotion":"happy|sad|angry|surprised|
+           sleepy|love|thinking|wink",
+ "text":"max 80 characters"}</pre>
+        <p>80 characters fits the 128x64 screen (21 characters by 4 lines at the default font).</p>
+      </div>
+      <div class="card">
+        <h3>Get a key</h3>
+        <ul>
+          <li>Create an API key in the Anthropic Console, set a low spend limit for the hackathon.</li>
+          <li>Put it in <code>API_KEY</code> in the sketch. The model id <code>claude-haiku-5-5</code> is the fast, cheap choice.</li>
+          <li>Prefer another provider? Only <code>askLLM()</code> changes: URL, headers and the JSON path to the reply.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Safer for a public demo: a tiny proxy</h3>
+      <p>A key stored on the board can be read by anyone who gets the device. For judging day, keep the key on a Cloudflare Worker and point the ESP32 at the Worker URL instead.</p>
+      <pre class="code">export default {
+  async fetch(req, env) {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json",
+                 "x-api-key": env.API_KEY,
+                 "anthropic-version": "2023-06-01" },
+      body: await req.text(),
+    });
+    return new Response(r.body, { status: r.status });
+  },
+};</pre>
+      <p>In the sketch, change the URL in <code>http.begin(...)</code> to your Worker and drop the <code>x-api-key</code> header.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Voice input</h3>
+      <p>The ESP32 has no microphone in this circuit. The web page the board serves has a Mic button that uses your phone's speech recognition (Chrome) and sends the text to the bot, so you can talk to it without extra hardware. If the browser blocks the mic on a plain http address, type instead.</p>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const EMOS=['happy','sad','angry','surprised','sleepy','love','thinking','wink'];
+const MODES=['Buddy','Study','Mood','Sleep'];
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));
+  ['sim','wire','steps','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
+});
+try{ if(window.mermaid) mermaid.initialize({startOnLoad:true,theme:'neutral'}); }catch(e){}
+
+/* ---------- OLED renderer (mirrors the Adafruit_GFX calls in the sketch) ---------- */
+const off=document.createElement('canvas');off.width=128;off.height=64;
+const g=off.getContext('2d',{willReadFrequently:true});
+const cv=$('#oled'),cx=cv.getContext('2d');
+const W='#fff',K='#000';
+function circ(x,y,r,c){g.fillStyle=c;g.beginPath();g.arc(x,y,r,0,7);g.fill()}
+function rr(x,y,w,h,r,c){g.fillStyle=c;g.beginPath();g.roundRect(x,y,w,h,r);g.fill()}
+function rect(x,y,w,h,c){g.fillStyle=c;g.fillRect(x,y,w,h)}
+function tri(a,b,c2,d,e,f,c){g.fillStyle=c;g.beginPath();g.moveTo(a,b);g.lineTo(c2,d);g.lineTo(e,f);g.fill()}
+function heart(x,y){circ(x-5,y,6,W);circ(x+5,y,6,W);tri(x-11,y+2,x+11,y+2,x,y+14,W)}
+function eyeBox(x,y,h){rr(x-12,y-h/2,24,h,7,W)}
+
+const S={mode:0,emo:0,blink:false,look:0,textUntil:0,text:'',banner:0,busy:false};
+
+function drawFace(e,blink){
+  rect(0,0,128,64,K);
+  const lx=34+S.look,rx=94+S.look,ey=24;
+  if(blink&&e!==4&&e!==5){rr(lx-12,ey-1,24,3,1,W);rr(rx-12,ey-1,24,3,1,W)}
+  else switch(e){
+    case 0: circ(lx,ey+3,11,W);circ(lx,ey+10,11,K);circ(rx,ey+3,11,W);circ(rx,ey+10,11,K);break;
+    case 1: eyeBox(lx,ey,26);eyeBox(rx,ey,26);tri(lx-14,ey-14,lx+14,ey-14,lx-14,ey-1,K);tri(rx-14,ey-14,rx+14,ey-14,rx+14,ey-1,K);break;
+    case 2: eyeBox(lx,ey,26);eyeBox(rx,ey,26);tri(lx-14,ey-14,lx+14,ey-14,lx+14,ey-1,K);tri(rx-14,ey-14,rx+14,ey-14,rx-14,ey-1,K);break;
+    case 3: circ(lx,ey,14,W);circ(rx,ey,14,W);circ(lx,ey,5,K);circ(rx,ey,5,K);break;
+    case 4: rr(lx-12,ey+2,24,3,1,W);rr(rx-12,ey+2,24,3,1,W);g.fillStyle=W;g.font='bold 8px monospace';g.fillText('z',108,12);g.fillText('Z',114,20);break;
+    case 5: heart(lx,ey-2);heart(rx,ey-2);break;
+    case 6: eyeBox(lx,ey-2,22);eyeBox(rx,ey-2,22);circ(lx+4,ey-8,4,K);circ(rx+4,ey-8,4,K);break;
+    case 7: circ(lx,ey+3,11,W);circ(lx,ey+10,11,K);eyeBox(rx,ey,26);break;
+  }
+  switch(e){
+    case 0:case 7:case 5: circ(64,46,12,W);circ(64,41,12,K);break;
+    case 1: circ(64,58,12,W);circ(64,63,12,K);break;
+    case 2: rect(52,52,24,3,W);break;
+    case 3: g.strokeStyle=W;g.lineWidth=1;g.beginPath();g.arc(64,52,6,0,7);g.stroke();break;
+    case 6: circ(58,52,2,W);circ(66,52,2,W);circ(74,52,2,W);break;
+    case 4: rect(58,52,12,1,W);break;
+  }
+  if(performance.now()<S.banner){rect(0,0,60,10,K);g.fillStyle=W;g.font='8px monospace';g.fillText(MODES[S.mode],1,8)}
+}
+function drawText(t){
+  rect(0,0,128,64,K);g.fillStyle=W;g.font='8px monospace';
+  const words=t.split(' ');let line='',y=8;
+  for(const w of words){
+    if((line+' '+w).trim().length>21){g.fillText(line,0,y);y+=8;line=w}else line=(line+' '+w).trim();
+  }
+  g.fillText(line,0,y);
+}
+function present(){
+  const d=g.getImageData(0,0,128,64).data;
+  const lit=getComputedStyle(document.documentElement).getPropertyValue('--oled').trim()||'#79e7ff';
+  cx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--oled-bg').trim()||'#020807';
+  cx.fillRect(0,0,640,320);
+  cx.fillStyle=lit;
+  for(let y=0;y<64;y++)for(let x=0;x<128;x++)if(d[(y*128+x)*4]>110)cx.fillRect(x*5,y*5,4,4);
+}
+let lastBlink=0,blinkUntil=0;
+setInterval(()=>{
+  const now=performance.now();
+  if(now<S.textUntil)drawText(S.text);
+  else{
+    if(now-lastBlink>3200){lastBlink=now;blinkUntil=now+140;S.look=Math.round(Math.random()*12-6)}
+    drawFace(S.emo,now<blinkUntil);
+  }
+  present();
+},60);
+
+/* ---------- serial log + hardware LEDs ---------- */
+const logEl=$('#log');
+function log(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent=msg;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight}
+function beep(){const l=$('#ledbuz');l.classList.add('on');setTimeout(()=>l.classList.remove('on'),300)}
+const SOUND=new Set([0,1,2,3,5]);
+function setEmo(i,quiet){S.emo=i;S.textUntil=0;if(!quiet&&SOUND.has(i))beep()}
+
+/* ---------- UI ---------- */
+function chips(el,list,fn,cur){
+  el.innerHTML='';list.forEach((n,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=n;
+    b.onclick=()=>fn(i);el.appendChild(b)});
+}
+function refresh(){
+  [...$('#modes').children].forEach((b,i)=>b.setAttribute('aria-pressed',i===S.mode));
+  [...$('#emos').children].forEach((b,i)=>b.setAttribute('aria-pressed',i===S.emo));
+}
+function setMode(i){S.mode=i;S.banner=performance.now()+1500;setEmo(i===3?4:i===1?6:0,true);beep();log('mode -> '+MODES[i],'t');refresh()}
+chips($('#modes'),MODES,setMode);
+chips($('#emos'),EMOS,i=>{setEmo(i);log('emotion -> '+EMOS[i],'t');refresh()});
+const QUICK={0:['Tell me a fun fact','Who are you?','You look angry!'],1:['Give me a study tip','I cannot focus','Quiz me'],2:['I had a rough day','I got the job!','I feel anxious'],3:['Say goodnight','I cannot sleep','Good morning']};
+function renderQuick(){const q=$('#quick');q.innerHTML='';QUICK[S.mode].forEach(t=>{const b=document.createElement('button');b.className='chip';b.textContent=t;b.onclick=()=>{$('#q').value=t;ask(t)};q.appendChild(b)})}
+const _refresh=refresh;refresh=function(){_refresh();renderQuick()};
+
+/* ---------- mock LLM (stands in for the API call) ---------- */
+const RULES=[
+  [/angry|mad|furious/,'angry','Hey! Do I look grumpy? Hmph.'],
+  [/rough|bad day|sad|lonely|cry/,'sad','I am here with you. Want a hug emoji?'],
+  [/anxious|worried|stress/,'thinking','Breathe in 4, out 6. We go slow together.'],
+  [/job|won|passed|got it|yay|great/,'surprised','No way! That is amazing news!'],
+  [/love|thank/,'love','Aww, you are my favourite human.'],
+  [/goodnight|sleep|tired|good night/,'sleepy','Sweet dreams. Lights out in 3, 2, 1...'],
+  [/morning/,'happy','Good morning! Let us make today count.'],
+  [/focus/,'thinking','Try 25 min focus, 5 min break. Phone away.'],
+  [/quiz/,'wink','Easy one: what does I2C stand for?'],
+  [/study|tip/,'thinking','Teach it to me in one sentence. Gaps show.'],
+  [/who are you|name/,'wink','I am Pip, an ESP32 with feelings.'],
+  [/fact/,'surprised','Octopuses have three hearts!']
+];
+const FALLBACK={0:['happy','Ask me anything. I am all ears!'],1:['thinking','Good question. Break it into parts.'],2:['love','Tell me more, I am listening.'],3:['sleepy','Mmm... soft thoughts only now.']};
+function mock(q){const s=q.toLowerCase();for(const [re,e,t] of RULES)if(re.test(s))return {emotion:e,text:t};const f=FALLBACK[S.mode];return {emotion:f[0],text:f[1]}}
+
+async function ask(q){
+  if(S.busy||!q.trim())return;S.busy=true;
+  log('> '+q);
+  S.emo=6;S.textUntil=0;
+  log('POST https://api.anthropic.com/v1/messages','t');
+  log('  model=claude-haiku-5-5 mode='+MODES[S.mode],'t');
+  await new Promise(r=>setTimeout(r,1000));
+  const r=mock(q);
+  log('LLM HTTP 200','ok');log(JSON.stringify(r),'t');
+  S.emo=EMOS.indexOf(r.emotion);refresh();
+  if(SOUND.has(S.emo))beep();
+  await new Promise(r2=>setTimeout(r2,1500));
+  S.text=r.text;S.textUntil=performance.now()+5000;
+  S.busy=false;
+}
+$('#f').onsubmit=e=>{e.preventDefault();ask($('#q').value)};
+$('#b1').onclick=()=>setMode((S.mode+1)%4);
+$('#b2').onclick=()=>{setEmo(Math.floor(Math.random()*8));log('poke -> '+EMOS[S.emo],'t');refresh()};
+$('#b3').onclick=()=>{const t=QUICK[S.mode][0];$('#q').value=t;ask(t)};
+
+/* boot sequence like the real sketch */
+log('Connecting WiFi...','t');
+setTimeout(()=>{$('#ledwifi').classList.add('on');log('IP: 192.168.1.42','ok');log('Open http://192.168.1.42/ on your phone','t')},1200);
+S.banner=performance.now()+1500;refresh();
+
+/* ---------- wiring: button symbols ---------- */
+(function(){
+  const rows=[[250,'GPIO18','BTN1'],[290,'GPIO19','BTN2'],[330,'GPIO23','BTN3']];
+  let h='';
+  rows.forEach(([y,pin,name])=>{
+    h+=`<path class="wire w-sig" d="M200 ${y}H480"/><circle cx="200" cy="${y}" r="4" fill="var(--ink)"/>
+    <circle cx="490" cy="${y}" r="5" fill="none" stroke="var(--ink)" stroke-width="2"/><path d="M490 ${y}L520 ${y-14}" stroke="var(--ink)" stroke-width="2"/>
+    <circle cx="540" cy="${y}" r="5" fill="none" stroke="var(--ink)" stroke-width="2"/>
+    <path class="wire w-gnd" d="M545 ${y}H640"/><path class="wire w-sig" d="M480 ${y}H485"/>
+    <text x="206" y="${y-6}" class="dim">${pin}</text><text x="470" y="${y-10}" class="dim" text-anchor="end">${name}</text>`;
+  });
+  $('#btns').innerHTML=h;
+})();
+
+/* ---------- build steps ---------- */
+const STEPS=[
+ ['Install Arduino IDE 2.x','Download from arduino.cc/en/software and install. Open it once.',null],
+ ['Add ESP32 board support','File &gt; Preferences &gt; "Additional boards manager URLs", paste:<br><code>https://espressif.github.io/arduino-esp32/package_esp32_index.json</code><br>Then Tools &gt; Board &gt; Boards Manager, search <b>esp32</b>, install "esp32 by Espressif Systems" (3.x).'],
+ ['Install the USB driver (if needed)','Windows/Mac often need the CP2102 or CH340 driver. Plug the ESP32 in and check that a new port appears under Tools &gt; Port.'],
+ ['Install 3 libraries','Sketch &gt; Include Library &gt; Manage Libraries, install:<ul><li><b>Adafruit SSD1306</b> (accept "install all" for dependencies)</li><li><b>Adafruit GFX Library</b></li><li><b>ArduinoJson</b> by Benoit Blanchon, version 7.x</li></ul>'],
+ ['Wire the circuit','Follow the Wiring tab (same as your Cirkit project): OLED on 3V3/GND/GPIO21/GPIO22, buttons on GPIO18/19/23 to GND, buzzer on GPIO25. Power off while wiring.'],
+ ['Test the screen alone first','Open File &gt; Examples &gt; Adafruit SSD1306 &gt; ssd1306_128x64_i2c, set the address to 0x3C and upload. If you see the demo animation, the wiring is right.'],
+ ['Get an LLM API key','See the "Connect an LLM" tab. Create a key, set a small spend limit.'],
+ ['Paste the firmware and fill in the 3 values','Firmware tab &gt; Copy, paste into a new sketch. Set <code>WIFI_SSID</code>, <code>WIFI_PASS</code>, <code>API_KEY</code>. WiFi must be 2.4 GHz; a phone hotspot is the safest choice at a hackathon.'],
+ ['Select board and port, upload','Tools &gt; Board &gt; esp32 &gt; <b>ESP32 Dev Module</b>. Tools &gt; Port &gt; your board. Click Upload. If it hangs on "Connecting...", hold BOOT on the board.'],
+ ['Read the IP address','Tools &gt; Serial Monitor, baud <b>115200</b>. The board prints <code>IP: 192.168.x.x</code> and shows it on the screen.'],
+ ['Talk to your bot','On a phone on the same WiFi, open <code>http://&lt;that IP&gt;/</code>. Pick a mode, type or tap Mic, press Send. The face changes and the reply shows on the OLED.'],
+ ['Demo-day polish','Add a 3D-printed or cardboard case, keep a phone hotspot as a backup, pre-test the questions you will show, and keep the proxy option ready so your key is not on the device.']
+];
+let saved={};try{saved=JSON.parse(localStorage.getItem('pipSteps')||'{}')}catch(e){}
+const ol=$('#stepList');
+STEPS.forEach((s,i)=>{
+  const li=document.createElement('li');
+  li.innerHTML=`<input type="checkbox" id="s${i}" aria-label="Done: ${s[0]}"><div><h3>${i+1}. ${s[0]}</h3><p>${s[1]}</p></div>`;
+  const cb=li.querySelector('input');cb.checked=!!saved[i];li.classList.toggle('done',cb.checked);
+  cb.onchange=()=>{saved[i]=cb.checked;li.classList.toggle('done',cb.checked);try{localStorage.setItem('pipSteps',JSON.stringify(saved))}catch(e){}};
+  ol.appendChild(li);
+});
+
+/* ---------- copy ---------- */
+$('#copy').onclick=async()=>{
+  const t=$('#ino').textContent;
+  try{await navigator.clipboard.writeText(t);$('#copied').textContent='Copied.'}
+  catch(e){const r=document.createRange();r.selectNodeContents($('#ino'));const s=getSelection();s.removeAllRanges();s.addRange(r);$('#copied').textContent='Selected. Press Ctrl+C.'}
+};
+</script>
