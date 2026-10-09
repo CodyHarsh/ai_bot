@@ -385,7 +385,7 @@ const int   SERVER_PORT = 8000;
 #define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
 #define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
-#define MIC_SHIFT 12         // mic gain: lower = louder. 14 = quiet, 12 = 4x louder, 11 = 8x, 10 = 16x
+#define MIC_SHIFT 14         // starting mic gain: lower = louder. 14 = normal, 13 = 2x louder, 12 = 4x (can clip). It adjusts itself if the mic clips or is too quiet
 // ======================================================
 
 // ---------- pins (from your Cirkit circuit) ----------
@@ -679,6 +679,7 @@ void animate() {
 }
 
 // ================= audio =================
+int micShift = MIC_SHIFT;     // the gain actually in use (changes by itself, see setMicShift)
 // Reads n mono samples (left channel of the 32-bit stereo I2S stream). INMP441 data is in the top 24 bits.
 size_t readMono(int16_t* out, size_t n) {
   static int32_t tmp[2 * 160];
@@ -688,12 +689,18 @@ size_t readMono(int16_t* out, size_t n) {
     size_t got = i2s.readBytes((char*)tmp, want * 8) / 8;
     if (!got) break;
     for (size_t i = 0; i &lt; got; i++) {
-      int32_t v = tmp[2 * i] &gt;&gt; MIC_SHIFT;
+      int32_t v = tmp[2 * i] &gt;&gt; micShift;
       out[done + i] = (int16_t)constrain(v, -32768, 32767);
     }
     done += got;
   }
   return done;
+}
+
+int peakOf(const int16_t* s, size_t n) {
+  int p = 0;
+  for (size_t i = 0; i &lt; n; i++) { int a = s[i] &lt; 0 ? -s[i] : s[i]; if (a &gt; p) p = a; }
+  return p;
 }
 
 int rmsOf(const int16_t* s, size_t n) {
@@ -713,19 +720,40 @@ bool listenOn = true;         // false = muted (dashboard button, or key 'm' in 
 int lastCode = 0;             // HTTP code of the last conversation (200 = answered, 204 = no speech understood)
 unsigned long quietUntil = 0; // pause before listening again, so noise cannot retrigger straight away
 
+// Automatic gain: moves the gain one step (each step doubles or halves the level) and rescales the noise estimate.
+void setMicShift(int target) {
+  target = constrain(target, 8, 18);
+  if (target == micShift) return;
+  float scale = powf(2.0f, (float)(micShift - target));   // new level / old level
+  LOGI("MIC", "gain changed: MIC_SHIFT %d -&gt; %d (levels x%.2f)", micShift, target, scale);
+  micShift = target;
+  noiseEst *= scale;
+  threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
+}
+
 void calibrate() {
   message("Listening to the room", "stay quiet...");
-  long total = 0; int cnt = 0;
-  for (int i = 0; i &lt; 50; i++) {
-    size_t n = readMono(frameBuf, FRAME);
-    if (i &gt;= 10) { total += rmsOf(frameBuf, n); cnt++; }
+  int noise = 0, pk = 0;
+  for (int attempt = 0; attempt &lt; 8; attempt++) {
+    long total = 0; int cnt = 0; pk = 0;
+    for (int i = 0; i &lt; 40; i++) {
+      size_t n = readMono(frameBuf, FRAME);
+      if (i &gt;= 8) { total += rmsOf(frameBuf, n); cnt++; pk = max(pk, peakOf(frameBuf, n)); }
+    }
+    noise = cnt ? total / cnt : 0;
+    LOGD("MIC", "calibration pass %d: background level %d, loudest sample %d, gain MIC_SHIFT %d", attempt + 1, noise, pk, micShift);
+    if ((noise &gt; 3000 || pk &gt;= 32000) &amp;&amp; micShift &lt; 18) {   // far too hot for a quiet room: turn the gain down and measure again
+      LOGE("MIC", "the background reads %d (loudest sample %d): that is too hot for the gain, lowering it", noise, pk);
+      micShift++;
+      continue;
+    }
+    break;
   }
-  int noise = cnt ? total / cnt : 50;
   noiseEst = noise;
   threshold = max(noise * 3, noise + 150);
-  LOGI("MIC", "calibrated: background noise level %d, speech must exceed %d (starts a recording above %d)", noise, threshold, threshold * 13 / 10);
+  LOGI("MIC", "calibrated: background level %d, gain MIC_SHIFT %d, a recording starts above %d", noise, micShift, threshold * 13 / 10);
   if (noise == 0) LOGE("MIC", "the microphone sends NOTHING (level 0). Check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25, L/R=GND. Run RUN_MODE 4 for the full check");
-  else if (noise &gt; 3000) LOGE("MIC", "the background level is very high (%d): a noisy room, or the mic SD wire is floating. Try RUN_MODE 4", noise);
+  else if (noise &gt; 3000) LOGE("MIC", "the background is STILL very loud (%d) at the lowest gain: loud noise or voices nearby, or interference on the mic wires (keep them short and away from the speaker wires). Run RUN_MODE 4", noise);
 }
 
 void sendChunk(WiFiClient&amp; c, const int16_t* data, size_t samples) {
@@ -919,12 +947,13 @@ void conversation() {
   for (int k = 0; k &lt; PRE_FRAMES; k++) sendChunk(c, preRing[(preIdx + k) % PRE_FRAMES], FRAME);
 
   static int16_t batch[FRAME * 5];
-  int bn = 0, frames = PRE_FRAMES, quiet = 0, peak = threshold;
+  int bn = 0, frames = PRE_FRAMES, quiet = 0, peak = threshold, peakAbs = 0;
   unsigned long lastDraw = 0;
   lastCode = 0;
   while (frames &lt; MAX_FRAMES &amp;&amp; quiet &lt; SILENCE_FRAMES) {
     size_t n = readMono(frameBuf, FRAME);
     int lvl = rmsOf(frameBuf, n);
+    peakAbs = max(peakAbs, peakOf(frameBuf, n));
     if (lvl &gt; peak) peak = lvl;
     int endLevel = max(threshold, peak * 3 / 10);   // the end of speech = well below the loudest moment, even in a noisy room
     if (lvl &gt; endLevel) quiet = 0; else quiet++;
@@ -938,11 +967,19 @@ void conversation() {
   c.print("0\r\n\r\n");
   bool hitLimit = frames &gt;= MAX_FRAMES;
   LOGI("VAD", "recording ended (%s) after %d ms, loudest level %d, sent %d KB of audio", hitLimit ? "TIME LIMIT" : "silence", frames * 20, peak, frames * FRAME * 2 / 1024);
+  if (peakAbs &gt;= 32000) {
+    LOGE("MIC", "that recording CLIPPED (loudest sample %d of 32767): the gain is too high or it is very loud. Lowering the gain for next time", peakAbs);
+    setMicShift(micShift + 1);
+  }
   if (hitLimit) LOGE("VAD", "the recording never went quiet: constant noise or voices nearby (peak %d, quiet line %d). Mute with 'm', or move the mic away. Dashboard shows the live level", peak, max(threshold, peak * 3 / 10));
 
   setFace(THINKING);
   receiveAndPlay(c);
   c.stop();
+  if (lastCode == 200 &amp;&amp; peakAbs &gt; 0 &amp;&amp; peakAbs &lt; 4000 &amp;&amp; micShift &gt; 10) {   // understood, but the voice was quiet: a bit more gain helps
+    LOGI("MIC", "your voice was quiet (loudest sample %d): raising the gain a little", peakAbs);
+    setMicShift(micShift - 1);
+  }
 }
 
 void setServerMode(int m) {
@@ -1002,7 +1039,7 @@ void report() {
   }
   if (!linkUp) { LOGI("NET", "dashboard link up: reporting to %s:%d", SERVER_HOST, SERVER_PORT); linkUp = true; reportFails = 0; }
   c.print(String("GET /api/device?lvl=") + lastLevel + "&amp;thr=" + threshold + "&amp;rssi=" + WiFi.RSSI() + "&amp;emo=" + EMO_NAMES[emo] +
-          "&amp;heap=" + ESP.getFreeHeap() + "&amp;up=" + (now / 1000) + "&amp;vol=" + SPEAKER_VOLUME + "&amp;gain=" + MIC_SHIFT +
+          "&amp;heap=" + ESP.getFreeHeap() + "&amp;up=" + (now / 1000) + "&amp;vol=" + SPEAKER_VOLUME + "&amp;gain=" + micShift +
           " HTTP/1.1\r\nHost: " + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
   unsigned long t0 = millis();
   while (!c.available() &amp;&amp; c.connected() &amp;&amp; millis() - t0 &lt; 500) delay(1);
@@ -1092,7 +1129,7 @@ void runDiagnostics() {
   LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (start) ===================");
   LOGI("DIAG", "Copy everything from this line to the END line and send it for help.");
   LOGI("DIAG", "Pins: BCLK=%d WS=%d mic SD=%d amp DIN=%d | OLED SDA=%d SCL=%d | server %s:%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, SERVER_HOST, SERVER_PORT);
-  LOGI("DIAG", "Settings: MIC_SHIFT %d, SPEAKER_VOLUME %d%%", MIC_SHIFT, SPEAKER_VOLUME);
+  LOGI("DIAG", "Settings: MIC_SHIFT %d, SPEAKER_VOLUME %d%%", micShift, SPEAKER_VOLUME);
 
   // 1. power
   LOGI("DIAG", "--- 1. Board and power ---");
@@ -1138,8 +1175,8 @@ void runDiagnostics() {
   else if (!lAlive) micHint = "all zeros or constant: check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25 and L/R=GND, and that SD is not swapped with another wire";
   check(lAlive, "microphone sends data on the LEFT channel", micHint);
   long ac = chanAc(L);
-  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic shows roughly 300 to 20000 in a quiet room. Very low = SD floating or disconnected, very high = shorted or noisy wiring", ac);
-  check(lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 2000000, "microphone noise level looks like a real microphone", (lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 2000000) ? "" : buf);
+  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic in a quiet room shows roughly 300 to 20000. Below 100 = the SD wire is floating or disconnected. Above 60000 = loud noise nearby, or interference on the SD/clock wires (keep them short, away from the speaker wires)", ac);
+  check(lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 60000, "microphone noise level looks like a real microphone", (lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 60000) ? "" : buf);
   bool stuckHigh = L.n &amp;&amp; fabs(L.sum / L.n) &gt; 6000000.0;
   check(!stuckHigh, "microphone data is not stuck at full scale", stuckHigh ? "the SD line is stuck high: wire shorted to 3V3, or the mic has no ground" : "");
 
@@ -1155,7 +1192,10 @@ void runDiagnostics() {
     if (lv &lt; minLvl) minLvl = lv;
     ledUpdate();
   }
-  LOGI("DIAG", "quietest level %d, loudest level %d (levels after MIC_SHIFT %d)", minLvl, peakLvl, MIC_SHIFT);
+  LOGI("DIAG", "quietest level %d, loudest level %d (levels after MIC_SHIFT %d; healthy: quiet 50-1500, clap 3000-30000)", minLvl, peakLvl, micShift);
+  if (peakLvl &gt;= 30000) LOGE("DIAG", "the clap CLIPPED: raise MIC_SHIFT by 1 (or 2) in the sketch, the mic is too sensitive");
+  else if (peakLvl &lt; 3000) LOGI("DIAG", "the clap was weak: clap closer, or lower MIC_SHIFT by 1");
+  if (minLvl &gt; 3000) LOGE("DIAG", "even the QUIETEST moment reads %d: there is steady loud noise nearby, or the mic wires are picking up interference", minLvl);
   bool reacts = peakLvl &gt; 200 &amp;&amp; peakLvl &gt; minLvl * 3;
   snprintf(buf, sizeof(buf), "quiet %d, loud %d. Clap closer to the mic. If still flat, lower MIC_SHIFT by 1 or recheck the mic wiring", minLvl, peakLvl);
   check(reacts, "microphone reacts to sound", reacts ? "" : buf);
@@ -1206,7 +1246,7 @@ void setup() {
   LOGI("BOOT", "chip %s rev %d, %d core(s) at %d MHz, free memory %u bytes", ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(), (int)ESP.getCpuFreqMHz(), (unsigned)ESP.getFreeHeap());
   LOGI("BOOT", "last reset: %s", resetReasonText());
   LOGI("BOOT", "pins: I2S BCLK=%d WS=%d | mic SD=%d | amp DIN=%d | OLED SDA=%d SCL=%d | LED=%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, PIN_LED);
-  LOGI("BOOT", "settings: mic gain MIC_SHIFT=%d, speaker volume %d%%", MIC_SHIFT, SPEAKER_VOLUME);
+  LOGI("BOOT", "settings: starting mic gain MIC_SHIFT=%d, speaker volume %d%%", MIC_SHIFT, SPEAKER_VOLUME);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     LOGE("OLED", "display not found at 0x%02X. Check VDD=3V3, GND, SCK=GPIO%d, SDA=GPIO%d", OLED_ADDR, OLED_SCL, OLED_SDA);
     ledSet(LED_ERROR);
@@ -1289,6 +1329,10 @@ void loop() {
   static int loud = 0;
   lastLevel = rmsOf(frameBuf, n);
   if (n == 0) LOGE("MIC", "the I2S read returned no audio. The microphone clock is not running (check BCLK GPIO14 / WS GPIO25). Run RUN_MODE 4");
+  if (lastLevel &gt; 3000 &amp;&amp; millis() &gt; nextBeat - 5000 &amp;&amp; millis() &gt; quietUntil) {   // very loud while idle: say so, now and then
+    static unsigned long lastLoudWarn = 0;
+    if (millis() - lastLoudWarn &gt; 15000) { lastLoudWarn = millis(); LOGE("MIC", "the mic level is very high (%d) with nobody speaking. Steady noise or voices nearby, or interference on the mic wires. Mute with 'm' if people are talking", lastLevel); }
+  }
   if (lastLevel &lt; threshold) {                       // follow the room's background noise slowly
     noiseEst = noiseEst * 0.99f + lastLevel * 0.01f;
     threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
@@ -1300,6 +1344,7 @@ void loop() {
     nextBeat = millis() + 10000;
     LOGD("LIVE", "alive: mic level %d (room noise %d, recording starts above %d), memory %u, WiFi %d dBm, listening %s, last answer HTTP %d",
          lastLevel, (int)noiseEst, threshold * 13 / 10, (unsigned)ESP.getFreeHeap(), WiFi.RSSI(), listenOn ? "yes" : "NO (muted)", lastCode);
+    LOGD("LIVE", "mic gain MIC_SHIFT %d", micShift);
   }
   if (millis() - lastDraw &gt; 100) {
     lastDraw = millis();
@@ -1955,6 +2000,12 @@ async def talk(request: Request):
     t0 = time.time()
     mic = levels(pcm)
     state["rec_total"] += 1
+    if mic["peak"] &gt;= 98:
+        log_stt.warning("the microphone is CLIPPING (peak %s%%, average %s%%): too much gain or very loud noise. The board lowers its gain by itself; if this keeps happening, move away from voices and noise", mic["peak"], mic["rms"])
+    elif mic["rms"] &gt; 40:
+        log_stt.warning("the recording is a constant loud signal (average %s%%): noise or interference, not speech", mic["rms"])
+    elif mic["peak"] &lt; 3:
+        log_stt.warning("the microphone is very quiet (peak %s%%): speak closer, or the board will raise its gain", mic["peak"])
     text = await asyncio.to_thread(transcribe, pcm)
     t1 = time.time()
     log_stt.info("heard %r from %d ms of audio (mic level %s%% average, %s%% peak) in %d ms", text, mic["ms"], mic["rms"], mic["peak"], int((t1 - t0) * 1000))
@@ -2185,7 +2236,7 @@ canvas.spark{height:46px;width:100%}
   &lt;div class="meter"&gt;&lt;i id="lvlbar"&gt;&lt;/i&gt;&lt;u id="thrbar"&gt;&lt;/u&gt;&lt;/div&gt;
   &lt;canvas class="spark" id="spark" width="600" height="92"&gt;&lt;/canvas&gt;
   &lt;div class="hint" id="lvlhint"&gt;&lt;/div&gt;
-  &lt;div class="lab" style="margin-top:8px"&gt;&lt;span&gt;mic gain setting (MIC_SHIFT) &lt;b id="gain"&gt;-&lt;/b&gt;&lt;/span&gt;&lt;span&gt;speaker volume &lt;b id="vol"&gt;-&lt;/b&gt;%&lt;/span&gt;&lt;/div&gt;
+  &lt;div class="lab" style="margin-top:8px"&gt;&lt;span&gt;mic gain (MIC_SHIFT, adjusts itself) &lt;b id="gain"&gt;-&lt;/b&gt;&lt;/span&gt;&lt;span&gt;speaker volume &lt;b id="vol"&gt;-&lt;/b&gt;%&lt;/span&gt;&lt;/div&gt;
   &lt;div class="lab"&gt;&lt;span&gt;recordings sent &lt;b id="rect"&gt;-&lt;/b&gt;&lt;/span&gt;&lt;span&gt;ignored (no speech) &lt;b id="reci"&gt;-&lt;/b&gt;&lt;/span&gt;&lt;/div&gt;
   &lt;div style="margin-top:8px"&gt;&lt;button id="listenbtn"&gt;Listening: on&lt;/button&gt; &lt;span style="color:var(--muted);font-size:13px"&gt;mute it when other people are talking nearby&lt;/span&gt;&lt;/div&gt;
   &lt;div class="hint warn" id="rechint"&gt;&lt;/div&gt;
@@ -2365,7 +2416,7 @@ function draw(){
     $('#spkp').textContent=sp?`${sp.rms}% average, ${sp.peak}% peak, ${sp.ms} ms`:'-';$('#spkbar').style.width=sp?Math.min(100,sp.peak)+'%':'0';
     let hint='',cls='hint';
     if(m&amp;&amp;m.ms&gt;=5900){hint='The recording ran to the 6 second limit: background noise kept it going. Mute, or reduce the noise near the mic.';cls='hint warn'}
-    else if(m&amp;&amp;m.peak&gt;=98){hint='The mic is clipping (too loud). Raise MIC_SHIFT by 1.';cls='hint bad'}
+    else if(m&amp;&amp;m.peak&gt;=98){hint='The mic is clipping (too loud). The board lowers its gain by itself. If it keeps clipping, there is loud noise or interference near the mic.';cls='hint bad'}
     else if(m&amp;&amp;m.peak&lt;3){hint='The mic is very quiet. Lower MIC_SHIFT by 1 or speak closer.';cls='hint warn'}
     else if(sp&amp;&amp;sp.peak&gt;=98){hint='The speaker audio is at the limit. Lower TTS_GAIN or SPEAKER_VOLUME if it crackles.';cls='hint warn'}
     else if(m||sp){hint='Levels look healthy.';cls='hint good'}
@@ -2833,7 +2884,7 @@ const PHASES=[
   ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
   ['Switch to the mic test','Set <code>#define RUN_MODE 2</code> in <code>ai_bot.ino</code> and upload. The OLED also shows a level bar. (The separate <code>test_mic.ino</code> still works too.)'],
   ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
-  ['Too quiet or too loud?','Change <code>MIC_SHIFT</code>: 12 is the default, 11 is twice as sensitive, 10 four times, 13 is quieter. Then upload again and watch the bar.']]},
+  ['Too quiet or too loud?','<code>MIC_SHIFT</code> starts at 14 and then adjusts itself: it lowers the gain if the mic clips (a recording peaking at 100% is too hot) and raises it a little if your voice was quiet. To start somewhere else, 13 is twice as sensitive, 15 is quieter. Watch the level on the dashboard.']]},
  {t:'Phase 4 · Speaker',s:'about 10 min',items:[
   ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
   ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
@@ -2919,7 +2970,7 @@ const TESTS=[
  {n:'3 · Microphone',tag:'RUN_MODE 2',
   d:['Set <code>RUN_MODE</code> to <code>2</code> in <code>ai_bot.ino</code>, upload, and open the Serial Monitor at 115200 (the OLED shows a level bar too).','Stay quiet for 2 seconds, then clap, then talk.'],
   e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
-  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (11 is twice as sensitive as 12).']},
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (13 is twice as sensitive as 14).']},
  {n:'4 · Speaker',tag:'RUN_MODE 3',
   d:['Set <code>RUN_MODE</code> to <code>3</code> in <code>ai_bot.ino</code> and upload.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
   e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],

@@ -567,6 +567,12 @@ async def talk(request: Request):
     t0 = time.time()
     mic = levels(pcm)
     state["rec_total"] += 1
+    if mic["peak"] >= 98:
+        log_stt.warning("the microphone is CLIPPING (peak %s%%, average %s%%): too much gain or very loud noise. The board lowers its gain by itself; if this keeps happening, move away from voices and noise", mic["peak"], mic["rms"])
+    elif mic["rms"] > 40:
+        log_stt.warning("the recording is a constant loud signal (average %s%%): noise or interference, not speech", mic["rms"])
+    elif mic["peak"] < 3:
+        log_stt.warning("the microphone is very quiet (peak %s%%): speak closer, or the board will raise its gain", mic["peak"])
     text = await asyncio.to_thread(transcribe, pcm)
     t1 = time.time()
     log_stt.info("heard %r from %d ms of audio (mic level %s%% average, %s%% peak) in %d ms", text, mic["ms"], mic["rms"], mic["peak"], int((t1 - t0) * 1000))

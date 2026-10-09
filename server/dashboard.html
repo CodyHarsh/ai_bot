@@ -33,7 +33,7 @@ canvas.spark{height:46px;width:100%}
   <div class="meter"><i id="lvlbar"></i><u id="thrbar"></u></div>
   <canvas class="spark" id="spark" width="600" height="92"></canvas>
   <div class="hint" id="lvlhint"></div>
-  <div class="lab" style="margin-top:8px"><span>mic gain setting (MIC_SHIFT) <b id="gain">-</b></span><span>speaker volume <b id="vol">-</b>%</span></div>
+  <div class="lab" style="margin-top:8px"><span>mic gain (MIC_SHIFT, adjusts itself) <b id="gain">-</b></span><span>speaker volume <b id="vol">-</b>%</span></div>
   <div class="lab"><span>recordings sent <b id="rect">-</b></span><span>ignored (no speech) <b id="reci">-</b></span></div>
   <div style="margin-top:8px"><button id="listenbtn">Listening: on</button> <span style="color:var(--muted);font-size:13px">mute it when other people are talking nearby</span></div>
   <div class="hint warn" id="rechint"></div>
@@ -213,7 +213,7 @@ function draw(){
     $('#spkp').textContent=sp?`${sp.rms}% average, ${sp.peak}% peak, ${sp.ms} ms`:'-';$('#spkbar').style.width=sp?Math.min(100,sp.peak)+'%':'0';
     let hint='',cls='hint';
     if(m&&m.ms>=5900){hint='The recording ran to the 6 second limit: background noise kept it going. Mute, or reduce the noise near the mic.';cls='hint warn'}
-    else if(m&&m.peak>=98){hint='The mic is clipping (too loud). Raise MIC_SHIFT by 1.';cls='hint bad'}
+    else if(m&&m.peak>=98){hint='The mic is clipping (too loud). The board lowers its gain by itself. If it keeps clipping, there is loud noise or interference near the mic.';cls='hint bad'}
     else if(m&&m.peak<3){hint='The mic is very quiet. Lower MIC_SHIFT by 1 or speak closer.';cls='hint warn'}
     else if(sp&&sp.peak>=98){hint='The speaker audio is at the limit. Lower TTS_GAIN or SPEAKER_VOLUME if it crackles.';cls='hint warn'}
     else if(m||sp){hint='Levels look healthy.';cls='hint good'}

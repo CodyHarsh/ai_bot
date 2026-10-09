@@ -777,7 +777,7 @@ const PHASES=[
   ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
   ['Switch to the mic test','Set <code>#define RUN_MODE 2</code> in <code>ai_bot.ino</code> and upload. The OLED also shows a level bar. (The separate <code>test_mic.ino</code> still works too.)'],
   ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
-  ['Too quiet or too loud?','Change <code>MIC_SHIFT</code>: 12 is the default, 11 is twice as sensitive, 10 four times, 13 is quieter. Then upload again and watch the bar.']]},
+  ['Too quiet or too loud?','<code>MIC_SHIFT</code> starts at 14 and then adjusts itself: it lowers the gain if the mic clips (a recording peaking at 100% is too hot) and raises it a little if your voice was quiet. To start somewhere else, 13 is twice as sensitive, 15 is quieter. Watch the level on the dashboard.']]},
  {t:'Phase 4 · Speaker',s:'about 10 min',items:[
   ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
   ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
@@ -863,7 +863,7 @@ const TESTS=[
  {n:'3 · Microphone',tag:'RUN_MODE 2',
   d:['Set <code>RUN_MODE</code> to <code>2</code> in <code>ai_bot.ino</code>, upload, and open the Serial Monitor at 115200 (the OLED shows a level bar too).','Stay quiet for 2 seconds, then clap, then talk.'],
   e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
-  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (11 is twice as sensitive as 12).']},
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (13 is twice as sensitive as 14).']},
  {n:'4 · Speaker',tag:'RUN_MODE 3',
   d:['Set <code>RUN_MODE</code> to <code>3</code> in <code>ai_bot.ino</code> and upload.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
   e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],
