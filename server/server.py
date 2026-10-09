@@ -44,17 +44,17 @@ load_env_file()
 
 # The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
 # the next one answers, and the built-in offline replies are the last resort.
-#   default chain:  gemini -> groq -> ollama -> anthropic -> openai   (then the built-in offline replies)
-#   change it:      export LLM_CHAIN=gemini,ollama          (or one name, like LLM_CHAIN=groq)
+#   default chain:  groq -> openai -> gemini   (then the built-in offline replies)
+#   change it:      export LLM_CHAIN=groq,gemini,ollama,anthropic   (any of: groq, openai, gemini, ollama, anthropic, custom)
 # Keys (set only the ones you have):
-#   GEMINI_API_KEY (free, aistudio.google.com)   GROQ_API_KEY (free, console.groq.com)
-#   ANTHROPIC_API_KEY (paid)   OPENAI_API_KEY (paid, last fallback)
+#   GROQ_API_KEY (free, console.groq.com)   OPENAI_API_KEY (ChatGPT, paid)   GEMINI_API_KEY (free, aistudio.google.com)
+#   ANTHROPIC_API_KEY (Claude, paid) - only used if you add it to LLM_CHAIN
 #   ollama needs no key (ollama.com, then: ollama pull llama3.2)
 # Keys can go in the terminal (export ...) or in a .env file next to this script (see .env.example).
 # Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL.
 # Any other OpenAI-style service: add "custom" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
 # The voice does not depend on the brain: it is always TTS_VOICE (edge-tts), whichever provider answered.
-CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic,openai")).split(",") if x.strip()]
+CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "groq,openai,gemini")).split(",") if x.strip()]
 PRESETS = {  # base url, key env var(s), default model, model env var
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-2.5-flash", "GEMINI_MODEL"),
     "groq": ("https://api.groq.com/openai/v1", ("GROQ_API_KEY",), "llama-3.1-8b-instant", "GROQ_MODEL"),

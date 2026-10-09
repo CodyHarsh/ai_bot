@@ -390,6 +390,49 @@ flowchart LR
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
+      <h3>The brain chain: Groq first, then ChatGPT, then Gemini</h3>
+      <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
+      <pre class="mermaid">
+flowchart LR
+  A[Groq<br/>main, free] -->|fails| B[OpenAI<br/>ChatGPT] -->|fails| C[Gemini<br/>free] -->|fails| E[Built-in replies]
+      </pre>
+      <div class="scroll"><table>
+        <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal or .env</th></tr></thead>
+        <tbody>
+          <tr><td><b>Groq</b> (main)</td><td>Free key at console.groq.com</td><td><code>GROQ_API_KEY=...</code></td></tr>
+          <tr><td><b>OpenAI</b> (ChatGPT)</td><td>Key at platform.openai.com, needs credit</td><td><code>OPENAI_API_KEY=...</code></td></tr>
+          <tr><td><b>Gemini</b></td><td>Free key at aistudio.google.com</td><td><code>GEMINI_API_KEY=...</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. <b>The voice is always the same</b> (the cute edge-tts voice), whichever brain wrote the reply. Keep keys in a <code>.env</code> file: copy <code>.env.example</code> to <code>.env</code> in the server folder and fill it in. It is ignored by git.</p>
+      <p>Want more brains? Add them to the order, for example <code>export LLM_CHAIN=groq,openai,gemini,ollama,anthropic</code>. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Pip reads your tone and shows it on its face</h3>
+      <p>Before answering, the server judges how you sound. The LLM does this, and a quick keyword check backs it up, so it works even when no LLM is reachable. Pip then shows a face that matches your feeling. If the LLM picks a cheerful face for someone who is hurting, the server corrects it.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>You sound</th><th>Example</th><th>Pip's face</th></tr></thead>
+        <tbody>
+          <tr><td>sad or lonely</td><td>"I had a rough day"</td><td>sad (cry if very upset)</td></tr>
+          <tr><td>angry</td><td>"My brother is so annoying"</td><td>pout</td></tr>
+          <tr><td>anxious</td><td>"I am worried about my exam"</td><td>shy</td></tr>
+          <tr><td>tired</td><td>"I am so tired"</td><td>sleepy</td></tr>
+          <tr><td>excited</td><td>"I got the job!"</td><td>excited</td></tr>
+          <tr><td>loving</td><td>"I love you Pip"</td><td>love</td></tr>
+          <tr><td>playful</td><td>"Tell me a joke"</td><td>silly</td></tr>
+          <tr><td>curious</td><td>"What is the moon?"</td><td>curious</td></tr>
+        </tbody>
+      </table></div>
+      <p>It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Reply format the LLM must follow</h3>
+      <pre class="code">{"tone": "sad|lonely|angry|anxious|tired|excited|loving|playful|happy|curious|neutral",
+ "emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
+ "text": "1 or 2 short sentences, under 160 characters"}</pre>
+      <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
       <h3>The brain chain: Gemini first, OpenAI last</h3>
       <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
       <pre class="mermaid">
