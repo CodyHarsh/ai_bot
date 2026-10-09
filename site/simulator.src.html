@@ -628,6 +628,8 @@ const PHASES=[
   ['Install the USB driver if needed','Look at the small chip near the USB port: CP2102 or CH340. Install that driver, then plug the ESP32 in.'],
   ['Install two libraries','Sketch &gt; Include Library &gt; Manage Libraries. Install <b>Adafruit SSD1306</b> (choose "Install all" for dependencies) and <b>Adafruit GFX Library</b>.'],
   ['Select the board and port','Tools &gt; Board &gt; esp32 &gt; <b>ESP32 Dev Module</b>. Tools &gt; Port &gt; pick the new port. On macOS it looks like <code>/dev/cu.usbserial-XXXX</code> or <code>/dev/cu.SLAB_USBtoUART</code>. Port missing? Install the CP210x or CH340 driver, then unplug and replug the board.'],
+  ['Set the Tools menu for ESP32 Dev Module','Use these settings (the defaults are fine for the rest):<ul><li>Board: <b>ESP32 Dev Module</b></li><li>Upload Speed: <b>921600</b>. If uploads fail, drop to <b>115200</b></li><li>Flash Size: <b>4MB</b>, Partition Scheme: <b>Default 4MB with spiffs</b></li><li>PSRAM: <b>Disabled</b> (a plain Dev Module has none)</li><li>Port: the <code>/dev/cu.</code> one, not <code>/dev/tty.</code></li></ul>'],
+  ['macOS: close other serial users first','Only one program can hold the port. Close the Serial Monitor before you upload, and quit any other app using the board (a second Arduino window, screen, PlatformIO).'],
   ['Test the toolchain','File &gt; Examples &gt; 01.Basics &gt; Blink. Upload. If the onboard LED blinks, your computer, cable and board are fine. If it says "Connecting...", hold the BOOT button on the board.']]},
  {t:'Phase 2 · OLED face',s:'about 10 min',items:[
   ['Wire the OLED only','VDD to 3V3, GND to GND, SCK to GPIO19, SDA to GPIO21. Unplug USB while wiring.'],
@@ -698,6 +700,9 @@ const TROUBLE=[
  ['It never wakes up when I talk','Open the mic test and watch the level. Lower <code>MIC_SHIFT</code> by 1 or 2. Restart the ESP32 and stay quiet during calibration.'],
  ['It wakes up all the time','Raise <code>MIC_SHIFT</code> by 1, move away from fans and loud speakers, restart for a fresh calibration.'],
  ['Server says heard: \'\' (empty)','The audio was too quiet or too short. Speak closer, or lower <code>MIC_SHIFT</code>. Try <code>WHISPER_MODEL=small.en</code>.'],
+ ['macOS: "Resource busy" or the upload cannot open the port','Close the Serial Monitor and any Terminal running <code>screen</code>, unplug and replug the board, then pick the port again. If the port is missing on an older Mac, install the CP210x or CH340 driver and approve it in System Settings &gt; Privacy &amp; Security.'],
+ ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
+ ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
  ['Speaker crackles or is too loud','Lower <code>SPEAKER_VOLUME</code>. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
