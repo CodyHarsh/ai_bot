@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 import wave
 
@@ -26,7 +27,7 @@ import numpy as np
 import uvicorn
 from faster_whisper import WhisperModel
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 
 def load_env_file(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
@@ -195,6 +196,8 @@ RULES = (
 
 state = {"mode": 0, "history": [], "log": [], "warned": False, "provider": "-"}
 cooldown = {}                # provider name -> time when it may be tried again
+START_TIME = time.time()
+state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": []})   # live data for the dashboard
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
 print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
@@ -350,9 +353,12 @@ def call_llm(system: str, messages: list):
         if cooldown.get(name, 0) > time.time():
             continue
         try:
-            return call_one(name, system, messages), name
+            reply_text = call_one(name, system, messages)
+            state["errors"].pop(name, None)
+            return reply_text, name
         except Exception as e:  # any failure moves on to the next provider
             cooldown[name] = time.time() + COOLDOWN_SECONDS
+            state["errors"][name] = str(getattr(e, "message", e))[:200]
             errors.append(f"{name}: {getattr(e, 'message', e)}")
             print(f"[{name}] failed, trying the next one: {getattr(e, 'message', e)}")
     raise RuntimeError("; ".join(errors) or "no provider available")
@@ -421,6 +427,26 @@ def record(user: str, reply: dict):
     print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you ({reply.get('tone', '-')}): {user!r} -> {reply['emotion']}: {reply['text']!r}")
 
 
+def levels(pcm: bytes) -> dict:
+    """Loudness of 16-bit audio as percent of full scale, for the dashboard."""
+    a = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
+    if a.size == 0:
+        return {"rms": 0.0, "peak": 0.0, "ms": 0}
+    return {"rms": round(float(np.sqrt(np.mean(a * a))) * 100, 1), "peak": round(float(np.max(np.abs(a))) * 100, 1),
+            "ms": int(a.size / SAMPLE_RATE * 1000)}
+
+
+def health() -> dict:
+    return {
+        "uptime": int(time.time() - START_TIME), "stt": WHISPER_MODEL, "voice": VOICE, "tts_gain": TTS_GAIN,
+        "ffmpeg": bool(shutil.which("ffmpeg")), "offline_forced": OFFLINE, "provider": state.get("provider", "-"),
+        "chain": [{"name": n, "ready": n in ACTIVE, "cooldown": max(0, int(cooldown.get(n, 0) - time.time())),
+                   "error": state["errors"].get(n, ""),
+                   "model": found_models.get(n) or (CLAUDE_MODEL if n == "anthropic" else PRESETS.get(n, ("", "", "", ""))[2])}
+                  for n in CHAIN],
+    }
+
+
 async def respond(text: str) -> dict:
     switched = maybe_switch_mode(text)
     if switched:
@@ -436,12 +462,22 @@ async def talk(request: Request):
     pcm = await request.body()
     if len(pcm) < SAMPLE_RATE * 2 * 0.4:  # under 0.4 s: ignore
         return Response(status_code=204)
+    t0 = time.time()
+    mic = levels(pcm)
     text = await asyncio.to_thread(transcribe, pcm)
+    t1 = time.time()
     print("heard:", repr(text))
     if len(text) < 2:
+        state["turn"] = {"at": time.time(), "source": "esp32", "heard": "", "note": "nothing understood", "mic": mic}
         return Response(status_code=204)
     reply = await respond(text)
+    t2 = time.time()
     audio = await speak(reply["text"])
+    t3 = time.time()
+    state["turn"] = {"at": time.time(), "source": "esp32", "heard": text, "tone": reply.get("tone", "neutral"),
+                     "emotion": reply["emotion"], "provider": reply.get("provider", "-"), "reply": reply["text"],
+                     "mic": mic, "speaker": levels(audio),
+                     "ms": {"stt": int((t1 - t0) * 1000), "llm": int((t2 - t1) * 1000), "tts": int((t3 - t2) * 1000)}}
     headers = {
         "X-Emotion": reply["emotion"],
         "X-Text": reply["text"].encode("ascii", "ignore").decode()[:200],
@@ -462,20 +498,90 @@ async def set_mode(m: int = 0):
 @app.post("/api/chat")  # used by the test page below, no ESP32 needed
 async def chat(request: Request):
     body = await request.json()
+    t1 = time.time()
     reply = await respond(body.get("text", ""))
-    wav = to_wav(await speak(reply["text"]))
+    t2 = time.time()
+    pcm = await speak(reply["text"])
+    t3 = time.time()
+    state["turn"] = {"at": time.time(), "source": "web", "heard": body.get("text", ""), "tone": reply.get("tone", "neutral"),
+                     "emotion": reply["emotion"], "provider": reply.get("provider", "-"), "reply": reply["text"],
+                     "speaker": levels(pcm), "ms": {"llm": int((t2 - t1) * 1000), "tts": int((t3 - t2) * 1000)}}
+    wav = to_wav(pcm)
     return JSONResponse({**reply, "mode": MODES[state["mode"]], "audio": base64.b64encode(wav).decode()})
 
 
 @app.get("/api/state")
 async def get_state():
-    return {"mode": state["mode"], "modes": MODES, "log": state["log"]}
+    dev = dict(state["device"])
+    if dev:
+        dev["age"] = round(time.time() - dev.get("seen", 0), 1)
+    return {"mode": state["mode"], "modes": MODES, "log": state["log"], "device": dev, "turn": state["turn"],
+            "lvl_hist": state["lvl_hist"], "health": health(), "emotions": EMOTIONS + ["listening"]}
+
+
+@app.get("/api/device")  # the ESP32 reports here every second or two, and receives commands in the reply
+async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, emo: str = "", heap: int = 0,
+                 up: int = 0, vol: int = 0, gain: int = 0):
+    state["device"] = {"lvl": lvl, "thr": thr, "rssi": rssi, "emo": emo, "heap": heap, "up": up, "vol": vol, "gain": gain,
+                       "ip": request.client.host if request.client else "", "seen": time.time()}
+    state["lvl_hist"] = (state["lvl_hist"] + [lvl])[-60:]
+    cmd, state["cmd"] = state["cmd"], {}
+    return PlainTextResponse(f"force={cmd.get('face', '-')} beep={1 if cmd.get('beep') else 0}\n")
+
+
+@app.post("/api/cmd")  # dashboard buttons: show a face on the real OLED, or beep the real speaker
+async def cmd(request: Request):
+    body = await request.json()
+    if body.get("face") in EMOTIONS + ["listening"]:
+        state["cmd"]["face"] = body["face"]
+    if body.get("beep"):
+        state["cmd"]["beep"] = True
+    return {"queued": state["cmd"]}
+
+
+@app.post("/api/selftest")  # checks every part of the server side in one go
+async def selftest():
+    results, audio_b64 = [], ""
+
+    def add(name, ok, detail):
+        results.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    has_ffmpeg = bool(shutil.which("ffmpeg"))
+    add("ffmpeg installed", has_ffmpeg, "converts the voice for the speaker" if has_ffmpeg else "run: brew install ffmpeg")
+    try:
+        t = time.time()
+        pcm = await speak("Testing one, two, three. Pip is ready.")
+        ms = int((time.time() - t) * 1000)
+        lv = levels(pcm)
+        add("Voice (text to speech)", lv["ms"] > 500, f"{lv['ms']} ms of audio made in {ms} ms, level {lv['rms']}% (peak {lv['peak']}%)")
+        audio_b64 = base64.b64encode(to_wav(pcm)).decode()
+        t = time.time()
+        heard = await asyncio.to_thread(transcribe, pcm)
+        add("Hearing (speech to text)", len(heard) > 5, f'heard "{heard}" in {int((time.time() - t) * 1000)} ms')
+    except Exception as e:
+        add("Voice and hearing", False, str(e)[:200])
+    saved = list(state["history"])
+    try:
+        t = time.time()
+        r = await asyncio.to_thread(think, "Hello Pip, how are you today?")
+        ok = r.get("provider") not in (None, "offline")
+        add("Brain (LLM)", ok, f"{r.get('provider')} answered in {int((time.time() - t) * 1000)} ms: {r['text'][:70]}"
+            + ("" if ok else "  (using built-in replies, check your keys)"))
+    except Exception as e:
+        add("Brain (LLM)", False, str(e)[:200])
+    state["history"] = saved
+    dev = state["device"]
+    online = bool(dev) and time.time() - dev.get("seen", 0) < 6
+    add("ESP32 connected", online, f"reporting from {dev.get('ip', '?')}, mic level {dev.get('lvl', '?')}" if online
+        else "not reporting. Upload the latest ai_bot.ino and check WiFi and SERVER_HOST")
+    return {"results": results, "audio": audio_b64}
 
 
 PAGE = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Pip server</title>
 <body style="font-family:system-ui;max-width:560px;margin:auto;padding:16px">
 <h2>Pip server is running</h2>
+<p><a href="/dashboard">Open the live dashboard</a> (levels, faces, self-test)</p>
 <p>Mode: <select id=m onchange="fetch('/mode?m='+this.selectedIndex)"></select></p>
 <form onsubmit="send(event)"><input id=q style="width:60%;padding:8px" placeholder="Type to Pip..."> <button>Send</button> <button type=button id=mic onclick="listen()">&#127908; Talk</button></form>
 <p><label><input type=checkbox id=conv> Keep listening after Pip answers</label> <span id=st style="color:#888"></span></p>
@@ -500,6 +606,14 @@ load();setInterval(load,4000);
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return PAGE
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+    if not os.path.exists(path):
+        return "dashboard.html is missing. Download it into the same folder as server.py, then reload."
+    return open(path, encoding="utf-8").read()
 
 
 if __name__ == "__main__":

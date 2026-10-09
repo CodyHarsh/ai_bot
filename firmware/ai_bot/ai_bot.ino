@@ -17,6 +17,7 @@
 
   ONE FILE does everything. Pick what it does with RUN_MODE below:
     0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test
+  In mode 0 the board also reports to the live dashboard: http://YOUR-MAC-IP:8000/dashboard
 
   Serial Monitor (115200) commands:
     n / p = next / previous emotion   h = happy   l = listening   t = thinking
@@ -300,6 +301,7 @@ int16_t frameBuf[FRAME];
 int16_t preRing[PRE_FRAMES][FRAME];
 int preIdx = 0;
 int threshold = 400;
+int lastLevel = 0;            // latest microphone level, shown live on the dashboard
 
 void calibrate() {
   message("Listening to the room", "stay quiet...");
@@ -485,6 +487,35 @@ void setServerMode(int m) {
   http.end();
 }
 
+// Tells the dashboard on your Mac how the device is doing (mic level, face, WiFi signal, memory),
+// and receives its commands in the reply: show a face, beep the speaker. Open http://YOUR-MAC-IP:8000/dashboard
+unsigned long nextReport = 0;
+void report() {
+  unsigned long now = millis();
+  if (now < nextReport || WiFi.status() != WL_CONNECTED) return;
+  WiFiClient c;
+  if (!c.connect(SERVER_HOST, SERVER_PORT, 300)) { nextReport = now + 10000; return; }   // server not up: try again in 10 s
+  c.print(String("GET /api/device?lvl=") + lastLevel + "&thr=" + threshold + "&rssi=" + WiFi.RSSI() + "&emo=" + EMO_NAMES[emo] +
+          "&heap=" + ESP.getFreeHeap() + "&up=" + (now / 1000) + "&vol=" + SPEAKER_VOLUME + "&gain=" + MIC_SHIFT +
+          " HTTP/1.1\r\nHost: " + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
+  unsigned long t0 = millis();
+  while (!c.available() && c.connected() && millis() - t0 < 500) delay(1);
+  c.readStringUntil('\n');                                              // status line
+  while (true) { String l = c.readStringUntil('\n'); if (l.length() <= 1) break; }   // headers
+  String body = c.readStringUntil('\n');                                // e.g. "force=wink beep=0"
+  c.stop();
+  nextReport = millis() + 1500;
+  int f = body.indexOf("force=");
+  if (f >= 0) {
+    String name = body.substring(f + 6);
+    int sp = name.indexOf(' ');
+    if (sp >= 0) name = name.substring(0, sp);
+    name.trim();
+    for (int i = 0; i < EMO_COUNT; i++) if (name == EMO_NAMES[i]) { setFace((Emotion)i, 3500); break; }
+  }
+  if (body.indexOf("beep=1") >= 0) { playTone(660, 120); playTone(880, 160); playSilence(60); }
+}
+
 void handleSerial() {
   while (Serial.available()) {
     char ch = Serial.read();
@@ -559,7 +590,8 @@ void loop() {
   preIdx = (preIdx + 1) % PRE_FRAMES;
 
   static int loud = 0;
-  if (rmsOf(frameBuf, n) > threshold) loud++; else loud = 0;
+  lastLevel = rmsOf(frameBuf, n);
+  if (lastLevel > threshold) loud++; else loud = 0;
 
   if (millis() - lastDraw > 100) {
     lastDraw = millis();
@@ -567,6 +599,7 @@ void loop() {
     if (!holdUntil && emo != SLEEPY && millis() - lastActivity > 60000) setFace(SLEEPY);
     drawFace();
   }
+  if (loud == 0) report();
   if (loud >= 3) { loud = 0; conversation(); }
 #endif
 }

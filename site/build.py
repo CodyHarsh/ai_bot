@@ -8,6 +8,7 @@ files = {
     "__F_SPK__": "firmware/test_speaker/test_speaker.ino",
     "__F_SERVER__": "server/server.py",
     "__F_REQ__": "server/requirements.txt",
+    "__F_DASH__": "server/dashboard.html",
 }
 for key, path in files.items():
     page = page.replace(key, html.escape((root / path).read_text(), quote=False))
