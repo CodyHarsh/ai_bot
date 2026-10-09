@@ -16,7 +16,7 @@
     OLED      VDD->3V3  GND->GND  SCK(SCL)->GPIO19  SDA->GPIO21
 
   ONE FILE does everything. Pick what it does with RUN_MODE below:
-    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test
+    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test   4 = DIAGNOSTIC (finds what is broken)
   In mode 0 the board also reports to the live dashboard: http://YOUR-MAC-IP:8000/dashboard
 
   Serial Monitor (115200) commands:
@@ -30,13 +30,16 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ESP_I2S.h>
+#include <esp_system.h>
 
 // ================= CONFIG: edit these =================
 const char* WIFI_SSID   = "YOUR_WIFI_NAME";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 const char* SERVER_HOST = "192.168.1.50";   // your laptop's IP, where server.py runs
 const int   SERVER_PORT = 8000;
-#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test
+#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test, 4 = DIAGNOSTIC report
+#define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
+#define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
 #define MIC_SHIFT 12         // mic gain: lower = louder. 14 = quiet, 12 = 4x louder, 11 = 8x, 10 = 16x
 // ======================================================
@@ -58,6 +61,65 @@ const int   SERVER_PORT = 8000;
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 I2SClass i2s;
+
+// ================= logging =================
+// Every module writes tagged lines like:  [  12345] INFO MIC   calibrated: ...
+//   tags: BOOT OLED WIFI NET I2S MIC VAD PLAY CMD LIVE DIAG.  Lines go to the Serial Monitor and, when the
+//   server is reachable, to the dashboard log panel and the server terminal too.
+String logBuf;   // log lines waiting to be sent to the dashboard
+void logLine(const char* lvl, const char* tag, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void logLine(const char* lvl, const char* tag, const char* fmt, ...) {
+  char msg[220];
+  va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
+  char line[280];
+  snprintf(line, sizeof(line), "[%7lu] %-4s %-5s %s", millis(), lvl, tag, msg);
+  Serial.println(line);
+  logBuf += line; logBuf += "\n";
+  if (logBuf.length() > 1800) logBuf = logBuf.substring(logBuf.length() - 1200);   // keep the newest lines
+}
+#define LOGE(tag, ...) do { if (LOG_LEVEL >= 1) logLine("ERR", tag, __VA_ARGS__); } while (0)
+#define LOGI(tag, ...) do { if (LOG_LEVEL >= 2) logLine("INFO", tag, __VA_ARGS__); } while (0)
+#define LOGD(tag, ...) do { if (LOG_LEVEL >= 3) logLine("DBG", tag, __VA_ARGS__); } while (0)
+
+// ================= status LED =================
+//   fast blinking ........ starting up / joining WiFi
+//   short blip every 2 s .. ready and listening
+//   solid on ............... hearing you (recording)
+//   slow blinking .......... thinking (waiting for the server)
+//   very fast blinking ..... speaking
+//   three blinks, pause .... something is wrong (read the log)
+//   tiny blip every 3 s .... muted
+enum LedMode { LED_BOOT, LED_IDLE, LED_REC, LED_THINK, LED_SPEAK, LED_ERROR, LED_MUTED };
+LedMode ledMode = LED_BOOT;
+void ledSet(LedMode m) { ledMode = m; }
+void ledUpdate() {
+  if (PIN_LED < 0) return;
+  unsigned long t = millis();
+  bool on = false;
+  switch (ledMode) {
+    case LED_BOOT:  on = (t / 120) % 2; break;
+    case LED_IDLE:  on = (t % 2000) < 80; break;
+    case LED_REC:   on = true; break;
+    case LED_THINK: on = (t / 300) % 2; break;
+    case LED_SPEAK: on = (t / 70) % 2; break;
+    case LED_ERROR: { unsigned long m = t % 1800; on = (m < 150) || (m > 300 && m < 450) || (m > 600 && m < 750); break; }
+    case LED_MUTED: on = (t % 3000) < 40; break;
+  }
+  digitalWrite(PIN_LED, on ? HIGH : LOW);
+}
+const char* resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "power on";
+    case ESP_RST_SW:        return "software restart";
+    case ESP_RST_PANIC:     return "CRASH (panic)";
+    case ESP_RST_INT_WDT:   return "watchdog (interrupt)";
+    case ESP_RST_TASK_WDT:  return "watchdog (task stuck)";
+    case ESP_RST_WDT:       return "watchdog";
+    case ESP_RST_BROWNOUT:  return "BROWN-OUT (power dipped: weak USB cable or port, or the speaker draws too much)";
+    case ESP_RST_EXT:       return "reset button";
+    default:                return "other";
+  }
+}
 
 // ---------- emotions ----------
 enum Emotion { HAPPY, EXCITED, LOVE, WINK, JOY, SILLY, SLEEPY, SAD, CRY, POUT,
@@ -317,7 +379,9 @@ void calibrate() {
   int noise = cnt ? total / cnt : 50;
   noiseEst = noise;
   threshold = max(noise * 3, noise + 150);
-  Serial.printf("Noise floor %d, speech threshold %d\n", noise, threshold);
+  LOGI("MIC", "calibrated: background noise level %d, speech must exceed %d (starts a recording above %d)", noise, threshold, threshold * 13 / 10);
+  if (noise == 0) LOGE("MIC", "the microphone sends NOTHING (level 0). Check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25, L/R=GND. Run RUN_MODE 4 for the full check");
+  else if (noise > 3000) LOGE("MIC", "the background level is very high (%d): a noisy room, or the mic SD wire is floating. Try RUN_MODE 4", noise);
 }
 
 void sendChunk(WiFiClient& c, const int16_t* data, size_t samples) {
@@ -362,6 +426,7 @@ void micMeter() {
   static int peak = 0;
   size_t n = readMono(frameBuf, FRAME);
   int level = rmsOf(frameBuf, n);
+  lastLevel = level;
   peak = max(level, (int)(peak * 0.97f));
   if (millis() - last < 100) return;
   last = millis();
@@ -381,7 +446,8 @@ void micMeter() {
 // RUN_MODE 3: two beeps every 2 seconds
 void speakerTest() {
   message("SPEAKER TEST", "beep boop");
-  Serial.println("beep");
+  LOGI("PLAY", "beep (volume %d%%). If you hear nothing, run RUN_MODE 4", SPEAKER_VOLUME);
+  ledSet(LED_SPEAK); ledUpdate();
   playTone(660, 150);
   playTone(880, 250);
   playSilence(100);
@@ -396,13 +462,22 @@ Emotion emotionFromName(String s) {
 
 void receiveAndPlay(WiFiClient& c) {
   unsigned long t0 = millis(), lastD = 0;
+  ledSet(LED_THINK);
+  LOGD("NET", "waiting for the server's answer (hearing, thinking, making the voice)...");
   while (!c.available() && c.connected() && millis() - t0 < 30000) {
     if (millis() - lastD > 100) { animate(); drawFace(); lastD = millis(); }
+    ledUpdate();
     delay(5);
+  }
+  unsigned long waited = millis() - t0;
+  if (!c.available()) {
+    LOGE("NET", "no answer from the server after %lu ms. Look at the server terminal: it may be busy or have crashed", waited);
+    lastCode = -1; setFace(SAD, 2500); ledSet(LED_ERROR);
+    return;
   }
   String status = c.readStringUntil('\n');
   int code = status.substring(9, 12).toInt();
-  long remaining = -1; String emoStr = "happy", text = "";
+  long remaining = -1; String emoStr = "happy", text = "", provider = "-", tone = "-";
   while (true) {
     String l = c.readStringUntil('\n');
     if (l.length() <= 1) break;
@@ -411,23 +486,41 @@ void receiveAndPlay(WiFiClient& c) {
     if (low.startsWith("content-length:")) remaining = l.substring(15).toInt();
     else if (low.startsWith("x-emotion:")) { emoStr = l.substring(10); emoStr.trim(); }
     else if (low.startsWith("x-text:")) { text = l.substring(7); text.trim(); }
+    else if (low.startsWith("x-provider:")) { provider = l.substring(11); provider.trim(); }
+    else if (low.startsWith("x-tone:")) { tone = l.substring(7); tone.trim(); }
   }
   lastCode = code;
-  Serial.printf("Server: HTTP %d, emotion=%s, text=%s\n", code, emoStr.c_str(), text.c_str());
-  if (code != 200) { setFace(code == 204 ? HAPPY : SAD, 2500); return; }
+  LOGI("NET", "server answered HTTP %d after %lu ms: tone=%s face=%s brain=%s", code, waited, tone.c_str(), emoStr.c_str(), provider.c_str());
+  if (text.length()) LOGI("NET", "reply: %s", text.c_str());
+  if (code == 204) LOGI("NET", "the server understood no speech in that recording (too noisy, too quiet, or nobody spoke)");
+  if (code != 200) {
+    if (code != 204) { LOGE("NET", "unexpected HTTP %d. Read the server terminal for the error", code); ledSet(LED_ERROR); }
+    setFace(code == 204 ? HAPPY : SAD, 2500);
+    return;
+  }
+  if (remaining == 0) LOGE("PLAY", "the server sent an EMPTY voice (Content-Length 0), so the speaker has nothing to play. The problem is on the Mac: check ffmpeg and the voice service in the server terminal, or press Run self-test on the dashboard");
+  else LOGI("PLAY", "voice incoming: %ld bytes (about %ld ms)", remaining, remaining / 32);
 
   setFace(emotionFromName(emoStr));
   talking = true;
+  ledSet(LED_SPEAK);
   alignas(4) static uint8_t buf[512];
   static int32_t out[2 * 256];
   int have = 0;
-  unsigned long lastData = millis(), lastDraw = 0;
+  unsigned long lastData = millis(), lastDraw = 0, p0 = millis(), stalls = 0;
+  unsigned long bytesIn = 0, bytesOut = 0, shortWrites = 0;
+  int peakOut = 0;
   while (remaining != 0 && (c.connected() || c.available())) {
     int avail = c.available();
-    if (avail <= 0) { if (millis() - lastData > 4000) break; delay(2); continue; }
+    if (avail <= 0) {
+      if (millis() - lastData > 4000) { LOGE("PLAY", "the voice stopped arriving (4 s gap): WiFi or server problem"); break; }
+      delay(2); ledUpdate(); continue;
+    }
+    if (millis() - lastData > 300) stalls++;
     int got = c.read(buf + have, min(avail, (int)sizeof(buf) - have));
     if (got <= 0) continue;
     lastData = millis();
+    bytesIn += got;
     have += got;
     if (remaining > 0) remaining -= got;
     int ns = have / 2;
@@ -436,31 +529,47 @@ void receiveAndPlay(WiFiClient& c) {
     for (int i = 0; i < ns; i++) {
       int32_t v = amplify(s[i]);
       e += abs(v);
+      if (abs(v) > peakOut) peakOut = abs(v);
       out[2 * i] = out[2 * i + 1] = v << 16;
     }
-    i2s.write((uint8_t*)out, ns * 8);
+    size_t w = i2s.write((uint8_t*)out, ns * 8);
+    bytesOut += w;
+    if (w != (size_t)(ns * 8)) shortWrites++;
     talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
     if (have & 1) { buf[0] = buf[have - 1]; have = 1; } else have = 0;
     if (millis() - lastDraw > 90) { animate(); drawFace(); lastDraw = millis(); }
+    ledUpdate();
   }
   playSilence(120);
   talking = false; talkAmp = 0;
+  LOGI("PLAY", "played %lu voice bytes in %lu ms, %lu bytes sent to the amplifier, loudest sample %d%% of full scale", bytesIn, millis() - p0, bytesOut, peakOut * 100 / 32767);
+  if (bytesIn > 0 && peakOut < 100) LOGE("PLAY", "the voice data is silent (all near zero). The server made an empty or silent voice: check the server terminal");
+  if (shortWrites > 0) LOGE("PLAY", "%lu I2S writes were cut short: the speaker output is not running properly. Run RUN_MODE 4", shortWrites);
+  if (stalls > 3) LOGD("PLAY", "the voice arrived in %lu bursts (weak WiFi may cause stutter)", stalls);
+  if (remaining > 0) LOGE("PLAY", "the voice was cut short: %ld bytes never arrived", remaining);
   for (int i = 0; i < 25; i++) readMono(frameBuf, FRAME);   // drop mic data captured while speaking (stops it hearing itself)
   setFace(emotionFromName(emoStr), 4000);
   lastActivity = millis();
+  ledSet(listenOn ? LED_IDLE : LED_MUTED);
 }
 
 void conversation() {
   lastActivity = millis();
   setFace(LISTENING); drawFace();
+  ledSet(LED_REC); ledUpdate();
+  LOGI("VAD", "speech detected: level %d is above the threshold %d, recording...", lastLevel, threshold);
   WiFiClient c;
   c.setNoDelay(true);
+  unsigned long tc = millis();
   if (!c.connect(SERVER_HOST, SERVER_PORT, 3000)) {
-    Serial.println("Cannot reach server: check SERVER_HOST, same WiFi, firewall");
+    LOGE("NET", "cannot connect to %s:%d after %lu ms (WiFi %s, signal %d dBm). Check SERVER_HOST is your Mac's current IP, same WiFi, firewall, and that the server is running",
+         SERVER_HOST, SERVER_PORT, millis() - tc, WiFi.status() == WL_CONNECTED ? "connected" : "DISCONNECTED", WiFi.RSSI());
     setFace(CRY, 3000);
+    ledSet(LED_ERROR);
     if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();
     return;
   }
+  LOGD("NET", "connected to the server in %lu ms", millis() - tc);
   c.print(String("POST /talk HTTP/1.1\r\nHost: ") + SERVER_HOST +
           "\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
   for (int k = 0; k < PRE_FRAMES; k++) sendChunk(c, preRing[(preIdx + k) % PRE_FRAMES], FRAME);
@@ -479,10 +588,13 @@ void conversation() {
     if (++bn == 5) { sendChunk(c, batch, FRAME * 5); bn = 0; }
     frames++;
     if (millis() - lastDraw > 200) { animate(); drawFace(); lastDraw = millis(); }
+    ledUpdate();
   }
   if (bn) sendChunk(c, batch, FRAME * bn);
   c.print("0\r\n\r\n");
-  Serial.printf("Sent %d ms of audio\n", frames * 20);
+  bool hitLimit = frames >= MAX_FRAMES;
+  LOGI("VAD", "recording ended (%s) after %d ms, loudest level %d, sent %d KB of audio", hitLimit ? "TIME LIMIT" : "silence", frames * 20, peak, frames * FRAME * 2 / 1024);
+  if (hitLimit) LOGE("VAD", "the recording never went quiet: constant noise or voices nearby (peak %d, quiet line %d). Mute with 'm', or move the mic away. Dashboard shows the live level", peak, max(threshold, peak * 3 / 10));
 
   setFace(THINKING);
   receiveAndPlay(c);
@@ -493,18 +605,58 @@ void setServerMode(int m) {
   HTTPClient http;
   http.begin(SERVER_HOST, SERVER_PORT, String("/mode?m=") + m);
   int code = http.GET();
-  Serial.printf("mode %d -> HTTP %d\n", m, code);
+  LOGI("CMD", "mode %d -> server answered HTTP %d", m, code);
   http.end();
 }
 
 // Tells the dashboard on your Mac how the device is doing (mic level, face, WiFi signal, memory),
 // and receives its commands in the reply: show a face, beep the speaker. Open http://YOUR-MAC-IP:8000/dashboard
-unsigned long nextReport = 0;
+unsigned long nextReport = 0, nextBeat = 0;
+int reportFails = 0;
+bool linkUp = false;
+
+int probeServer() {   // one-off check that the server answers: used at start-up and in the diagnostic
+  unsigned long t0 = millis();
+  WiFiClient c;
+  if (!c.connect(SERVER_HOST, SERVER_PORT, 2500)) {
+    LOGE("NET", "cannot connect to %s:%d after %lu ms. Check SERVER_HOST (your Mac's CURRENT IP), same WiFi, firewall, and that the server is running", SERVER_HOST, SERVER_PORT, millis() - t0);
+    return -1;
+  }
+  unsigned long tc = millis() - t0;
+  c.print(String("GET /api/state HTTP/1.1\r\nHost: ") + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
+  unsigned long t1 = millis();
+  while (!c.available() && c.connected() && millis() - t1 < 2000) delay(1);
+  String status = c.readStringUntil('\n');
+  c.stop();
+  int code = status.substring(9, 12).toInt();
+  LOGI("NET", "server %s:%d reachable: connected in %lu ms, GET /api/state -> HTTP %d", SERVER_HOST, SERVER_PORT, tc, code);
+  return code;
+}
+
+void shipLogs() {   // sends pending log lines to the server so they show on the dashboard and in the server terminal
+  if (logBuf.length() == 0) return;
+  WiFiClient lc;
+  if (!lc.connect(SERVER_HOST, SERVER_PORT, 300)) return;
+  String body = logBuf;
+  logBuf = "";
+  lc.print(String("POST /api/devlog HTTP/1.1\r\nHost: ") + SERVER_HOST + "\r\nContent-Type: text/plain\r\nContent-Length: " +
+           body.length() + "\r\nConnection: close\r\n\r\n" + body);
+  unsigned long t = millis();
+  while (!lc.available() && lc.connected() && millis() - t < 300) delay(1);
+  lc.stop();
+}
+
 void report() {
   unsigned long now = millis();
   if (now < nextReport || WiFi.status() != WL_CONNECTED) return;
   WiFiClient c;
-  if (!c.connect(SERVER_HOST, SERVER_PORT, 300)) { nextReport = now + 10000; return; }   // server not up: try again in 10 s
+  if (!c.connect(SERVER_HOST, SERVER_PORT, 300)) {   // server not up: try again in 10 s
+    if (linkUp || reportFails == 0) LOGE("NET", "dashboard link down: cannot reach %s:%d (is the server running? is SERVER_HOST right?)", SERVER_HOST, SERVER_PORT);
+    linkUp = false; reportFails++;
+    nextReport = now + 10000;
+    return;
+  }
+  if (!linkUp) { LOGI("NET", "dashboard link up: reporting to %s:%d", SERVER_HOST, SERVER_PORT); linkUp = true; reportFails = 0; }
   c.print(String("GET /api/device?lvl=") + lastLevel + "&thr=" + threshold + "&rssi=" + WiFi.RSSI() + "&emo=" + EMO_NAMES[emo] +
           "&heap=" + ESP.getFreeHeap() + "&up=" + (now / 1000) + "&vol=" + SPEAKER_VOLUME + "&gain=" + MIC_SHIFT +
           " HTTP/1.1\r\nHost: " + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
@@ -512,7 +664,7 @@ void report() {
   while (!c.available() && c.connected() && millis() - t0 < 500) delay(1);
   c.readStringUntil('\n');                                              // status line
   while (true) { String l = c.readStringUntil('\n'); if (l.length() <= 1) break; }   // headers
-  String body = c.readStringUntil('\n');                                // e.g. "force=wink beep=0"
+  String body = c.readStringUntil('\n');                                // e.g. "force=wink beep=0 listen=1"
   c.stop();
   nextReport = millis() + 1500;
   int f = body.indexOf("force=");
@@ -521,14 +673,15 @@ void report() {
     int sp = name.indexOf(' ');
     if (sp >= 0) name = name.substring(0, sp);
     name.trim();
-    for (int i = 0; i < EMO_COUNT; i++) if (name == EMO_NAMES[i]) { setFace((Emotion)i, 3500); break; }
+    for (int i = 0; i < EMO_COUNT; i++) if (name == EMO_NAMES[i]) { LOGI("CMD", "dashboard asked for face '%s'", name.c_str()); setFace((Emotion)i, 3500); break; }
   }
   int li = body.indexOf("listen=");
   if (li >= 0) {
     bool on = body.charAt(li + 7) != '0';
-    if (on != listenOn) { listenOn = on; setFace(on ? HAPPY : SLEEPY); Serial.println(on ? "listening: on" : "listening: OFF (muted)"); }
+    if (on != listenOn) { listenOn = on; setFace(on ? HAPPY : SLEEPY); ledSet(on ? LED_IDLE : LED_MUTED); LOGI("CMD", "%s", on ? "listening: on" : "listening: OFF (muted from the dashboard)"); }
   }
-  if (body.indexOf("beep=1") >= 0) { playTone(660, 120); playTone(880, 160); playSilence(60); }
+  if (body.indexOf("beep=1") >= 0) { LOGI("CMD", "dashboard asked for a beep"); ledSet(LED_SPEAK); playTone(660, 120); playTone(880, 160); playSilence(60); ledSet(listenOn ? LED_IDLE : LED_MUTED); }
+  shipLogs();
 }
 
 void handleSerial() {
@@ -540,46 +693,226 @@ void handleSerial() {
     else if (ch == 'n') setFace((Emotion)((emo + 1) % EMO_COUNT));
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
-    else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); Serial.println(listenOn ? "listening: on" : "listening: OFF (muted)"); }
+    else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); ledSet(listenOn ? LED_IDLE : LED_MUTED); LOGI("CMD", "%s", listenOn ? "listening: on" : "listening: OFF (muted)"); }
     else if (ch >= '1' && ch <= '4' && RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
 }
 
 // ================= setup / loop =================
+// ================= RUN_MODE 4: guided hardware diagnostic =================
+// Checks power, OLED, WiFi, the server, the microphone (raw data, both channels, reaction to sound) and the
+// speaker (real-time output + you confirm you heard it). Prints one report you can copy and send for help.
+int diagFails = 0;
+String diagSummary;
+void check(bool ok, const char* name, const char* detail) {
+  LOGI("DIAG", "%s  %s%s%s", ok ? "PASS" : "FAIL", name, detail[0] ? "  ->  " : "", detail);
+  diagSummary += String(ok ? "PASS  " : "FAIL  ") + name + "\n";
+  if (!ok) diagFails++;
+}
+
+struct Chan { long n = 0, zeros = 0; int32_t mn = INT32_MAX, mx = INT32_MIN; double sum = 0, sq = 0; };
+void chanAdd(Chan& c, int32_t raw) {
+  int32_t v = raw >> 8;                       // the mic sends 24-bit samples in the top of a 32-bit slot
+  c.n++;
+  if (v == 0) c.zeros++;
+  if (v < c.mn) c.mn = v;
+  if (v > c.mx) c.mx = v;
+  c.sum += v; c.sq += (double)v * v;
+}
+long chanAc(const Chan& c) {                  // how much the signal wiggles (noise + sound), in 24-bit units
+  if (!c.n) return 0;
+  double m = c.sum / c.n, var = c.sq / c.n - m * m;
+  return var > 0 ? (long)sqrt(var) : 0;
+}
+bool chanAlive(const Chan& c) { return c.n > 0 && c.zeros < c.n * 99 / 100 && c.mx != c.mn; }
+
+long captureRaw(Chan& L, Chan& R, int ms) {   // returns how many stereo frames arrived
+  static int32_t tmp[2 * 160];
+  long frames = 0, target = (long)SAMPLE_RATE * ms / 1000;
+  unsigned long t0 = millis();
+  int empty = 0;
+  while (frames < target && millis() - t0 < (unsigned long)ms + 1500) {
+    size_t got = i2s.readBytes((char*)tmp, sizeof(tmp)) / 8;
+    if (!got) { if (++empty > 5) break; continue; }
+    for (size_t i = 0; i < got; i++) { chanAdd(L, tmp[2 * i]); chanAdd(R, tmp[2 * i + 1]); }
+    frames += got;
+    ledUpdate();
+  }
+  return frames;
+}
+
+void runDiagnostics() {
+  diagFails = 0; diagSummary = "";
+  char buf[200];
+  LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (start) ===================");
+  LOGI("DIAG", "Copy everything from this line to the END line and send it for help.");
+  LOGI("DIAG", "Pins: BCLK=%d WS=%d mic SD=%d amp DIN=%d | OLED SDA=%d SCL=%d | server %s:%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, SERVER_HOST, SERVER_PORT);
+  LOGI("DIAG", "Settings: MIC_SHIFT %d, SPEAKER_VOLUME %d%%", MIC_SHIFT, SPEAKER_VOLUME);
+
+  // 1. power
+  LOGI("DIAG", "--- 1. Board and power ---");
+  LOGI("DIAG", "chip %s rev %d, %d core(s), %d MHz, flash %u KB, free memory %u bytes", ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(), (int)ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1024), (unsigned)ESP.getFreeHeap());
+  LOGI("DIAG", "last reset reason: %s", resetReasonText());
+  check(esp_reset_reason() != ESP_RST_BROWNOUT, "power is stable (no brown-out)", esp_reset_reason() == ESP_RST_BROWNOUT ? "the board browned out. Use a short good USB cable in a direct port, or lower SPEAKER_VOLUME" : "");
+
+  // 2. OLED + I2C
+  LOGI("DIAG", "--- 2. OLED (I2C scan) ---");
+  String addrs; int found = 0; bool has3c = false;
+  for (uint8_t a = 8; a < 120; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) { char ab[10]; snprintf(ab, sizeof(ab), " 0x%02X", a); addrs += ab; found++; if (a == OLED_ADDR) has3c = true; }
+  }
+  LOGI("DIAG", "I2C devices found: %d:%s", found, addrs.c_str());
+  check(has3c, "OLED answers on I2C", has3c ? "" : "not found at the address in the sketch. Check VDD=3V3, GND, SCK=GPIO19, SDA=GPIO21");
+
+  // 3. WiFi + server
+  LOGI("DIAG", "--- 3. WiFi and server ---");
+  bool wifi = WiFi.status() == WL_CONNECTED;
+  check(wifi, "WiFi connected", wifi ? "" : "wrong name or password, or a 5 GHz network (the ESP32 needs 2.4 GHz)");
+  if (wifi) {
+    LOGI("DIAG", "network '%s': my IP %s, router %s, signal %d dBm", WIFI_SSID, WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
+    snprintf(buf, sizeof(buf), "signal %d dBm (stronger than -80 is good)", WiFi.RSSI());
+    check(WiFi.RSSI() > -80, "WiFi signal is strong enough", WiFi.RSSI() > -80 ? "" : buf);
+    int code = probeServer();
+    snprintf(buf, sizeof(buf), "no answer from %s:%d. Is SERVER_HOST your Mac's CURRENT IP (ipconfig getifaddr en0)? Same WiFi? Firewall? Server running?", SERVER_HOST, SERVER_PORT);
+    check(code == 200, "the server answers", code == 200 ? "" : buf);
+  }
+
+  // 4. microphone, raw
+  LOGI("DIAG", "--- 4. Microphone: stay QUIET for 2 seconds ---");
+  ledSet(LED_THINK); ledUpdate();
+  Chan L, R;
+  long frames = captureRaw(L, R, 2000);
+  LOGI("DIAG", "I2S read %ld frames (expected about %d)", frames, SAMPLE_RATE * 2);
+  LOGI("DIAG", "LEFT  channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", L.n ? L.zeros * 100 / L.n : 0L, (long)L.mn, (long)L.mx, chanAc(L));
+  LOGI("DIAG", "RIGHT channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", R.n ? R.zeros * 100 / R.n : 0L, (long)R.mn, (long)R.mx, chanAc(R));
+  check(frames > SAMPLE_RATE, "I2S is receiving audio frames", frames > SAMPLE_RATE ? "" : "nothing arrives: the I2S clock is not running. Check BCLK=GPIO14 and WS=GPIO25 wires");
+  bool lAlive = chanAlive(L), rAlive = chanAlive(R);
+  const char* micHint = "";
+  if (!lAlive && rAlive) micHint = "the data is on the RIGHT channel: connect the mic's L/R pin to GND (not 3V3)";
+  else if (!lAlive) micHint = "all zeros or constant: check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25 and L/R=GND, and that SD is not swapped with another wire";
+  check(lAlive, "microphone sends data on the LEFT channel", micHint);
+  long ac = chanAc(L);
+  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic shows roughly 300 to 20000 in a quiet room. Very low = SD floating or disconnected, very high = shorted or noisy wiring", ac);
+  check(lAlive && ac > 100 && ac < 2000000, "microphone noise level looks like a real microphone", (lAlive && ac > 100 && ac < 2000000) ? "" : buf);
+  bool stuckHigh = L.n && fabs(L.sum / L.n) > 6000000.0;
+  check(!stuckHigh, "microphone data is not stuck at full scale", stuckHigh ? "the SD line is stuck high: wire shorted to 3V3, or the mic has no ground" : "");
+
+  // 5. microphone reacts to sound
+  LOGI("DIAG", "--- 5. Microphone reaction: CLAP or speak LOUDLY for the next 4 seconds ---");
+  ledSet(LED_REC); ledUpdate();
+  int peakLvl = 0, minLvl = 32767;
+  unsigned long t0 = millis();
+  while (millis() - t0 < 4000) {
+    size_t n = readMono(frameBuf, FRAME);
+    int lv = rmsOf(frameBuf, n);
+    if (lv > peakLvl) peakLvl = lv;
+    if (lv < minLvl) minLvl = lv;
+    ledUpdate();
+  }
+  LOGI("DIAG", "quietest level %d, loudest level %d (levels after MIC_SHIFT %d)", minLvl, peakLvl, MIC_SHIFT);
+  bool reacts = peakLvl > 200 && peakLvl > minLvl * 3;
+  snprintf(buf, sizeof(buf), "quiet %d, loud %d. Clap closer to the mic. If still flat, lower MIC_SHIFT by 1 or recheck the mic wiring", minLvl, peakLvl);
+  check(reacts, "microphone reacts to sound", reacts ? "" : buf);
+
+  // 6. speaker
+  LOGI("DIAG", "--- 6. Speaker: three beeps, LISTEN ---");
+  ledSet(LED_SPEAK);
+  bool paced = true;
+  for (int k = 0; k < 3; k++) {
+    unsigned long b0 = millis();
+    playTone(880 - k * 140, 400);
+    unsigned long dt = millis() - b0;
+    LOGI("DIAG", "beep %d: 400 ms of audio went out in %lu ms", k + 1, dt);
+    if (dt < 250 || dt > 1500) paced = false;
+    delay(150);
+  }
+  playSilence(100);
+  check(paced, "speaker data leaves in real time (I2S output is running)", paced ? "" : "the output finished instantly or stalled: the I2S clock is not running. Check BCLK=GPIO14 and WS=GPIO25");
+  LOGI("DIAG", ">>> Did you HEAR three beeps? Type  y  or  n  in the Serial Monitor box and press Enter (15 s)");
+  int heard = -1;
+  unsigned long a0 = millis();
+  while (millis() - a0 < 15000 && heard < 0) {
+    ledUpdate();
+    if (Serial.available()) { char ch = Serial.read(); if (ch == 'y' || ch == 'Y') heard = 1; else if (ch == 'n' || ch == 'N') heard = 0; }
+    delay(10);
+  }
+  if (heard < 0) LOGI("DIAG", "no answer typed, the speaker result is unknown");
+  else check(heard == 1, "you heard the beeps", heard == 1 ? "" : "no sound. Check amp VIN=5V, GND, DIN=GPIO22, BCLK=GPIO14, LRC=GPIO25, speaker wires on the amp's screw terminals (never GND), and that the amp's SD pin is not tied to GND");
+
+  // result
+  LOGI("DIAG", "--- RESULT ---");
+  LOGI("DIAG", "%s", diagSummary.c_str());
+  if (diagFails == 0) LOGI("DIAG", "ALL CHECKS PASSED. The hardware is fine. If the bot still misbehaves, the problem is the server or the room noise.");
+  else LOGE("DIAG", "%d CHECK(S) FAILED. Fix the first FAIL above first, then run this again.", diagFails);
+  LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (END) ===================");
+  ledSet(diagFails ? LED_ERROR : LED_IDLE);
+}
+
 void setup() {
   Serial.begin(115200);
+  delay(300);
+  if (PIN_LED >= 0) pinMode(PIN_LED, OUTPUT);
+  ledSet(LED_BOOT); ledUpdate();
   Wire.begin(OLED_SDA, OLED_SCL);
   Wire.setClock(400000);
+  LOGI("BOOT", "==============================================");
+  LOGI("BOOT", "Pip starting. RUN_MODE %d, log level %d", RUN_MODE, LOG_LEVEL);
+  LOGI("BOOT", "chip %s rev %d, %d core(s) at %d MHz, free memory %u bytes", ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(), (int)ESP.getCpuFreqMHz(), (unsigned)ESP.getFreeHeap());
+  LOGI("BOOT", "last reset: %s", resetReasonText());
+  LOGI("BOOT", "pins: I2S BCLK=%d WS=%d | mic SD=%d | amp DIN=%d | OLED SDA=%d SCL=%d | LED=%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, PIN_LED);
+  LOGI("BOOT", "settings: mic gain MIC_SHIFT=%d, speaker volume %d%%", MIC_SHIFT, SPEAKER_VOLUME);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("OLED init failed: check power, SDA/SCL, controller and I2C address.");
-    while (true) delay(1000);
+    LOGE("OLED", "display not found at 0x%02X. Check VDD=3V3, GND, SCK=GPIO%d, SDA=GPIO%d", OLED_ADDR, OLED_SCL, OLED_SDA);
+    ledSet(LED_ERROR);
+    while (true) { ledUpdate(); delay(20); }
   }
+  LOGI("OLED", "display found at 0x%02X", OLED_ADDR);
   randomSeed(micros());
   setFace(STARRY, 1500); drawFace();
 
 #if RUN_MODE == 1
-  Serial.println("FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
+  LOGI("BOOT", "FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
+  ledSet(LED_IDLE);
 #else
-#if RUN_MODE == 0
+#if RUN_MODE == 0 || RUN_MODE == 4
   message("Connecting WiFi...", WIFI_SSID);
+  LOGI("WIFI", "joining '%s'...", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
-  Serial.println("\nESP32 IP: " + WiFi.localIP().toString());
+  unsigned long w0 = millis(), lastNote = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100); ledUpdate();
+    if (millis() - lastNote > 5000) {
+      lastNote = millis();
+      LOGE("WIFI", "not connected after %lu s (status %d). Wrong name or password, a 5 GHz network (the ESP32 needs 2.4 GHz), or out of range", (millis() - w0) / 1000, (int)WiFi.status());
+    }
+  }
+  LOGI("WIFI", "connected to '%s' in %lu ms: my IP %s, router %s, signal %d dBm", WIFI_SSID, millis() - w0, WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
+  LOGI("WIFI", "the Mac must be on this same network: its IP should start like %s", WiFi.localIP().toString().c_str());
+  probeServer();
 #endif
   i2s.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);
   if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
-    Serial.println("I2S init failed");
+    LOGE("I2S", "I2S failed to start (BCLK=%d WS=%d mic SD=%d amp DIN=%d). Set RUN_MODE 4 for the diagnostic", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
     message("I2S failed", "check wiring");
-    while (true) delay(1000);
+    ledSet(LED_ERROR);
+    while (true) { ledUpdate(); delay(20); }
   }
+  LOGI("I2S", "started: %d Hz, 32-bit stereo. Clock BCLK=GPIO%d WS=GPIO%d, mic data in GPIO%d, speaker data out GPIO%d", SAMPLE_RATE, PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
 #if RUN_MODE == 0
   calibrate();
+  LOGI("BOOT", "READY. Say a short sentence close to the microphone. LED: short blip = listening, solid = recording, blinking = thinking");
+  ledSet(LED_IDLE);
 #elif RUN_MODE == 2
-  Serial.println("MIC TEST: talk or clap, the bar should grow.");
+  LOGI("BOOT", "MIC TEST: talk or clap, the bar on the OLED should grow.");
+  ledSet(LED_IDLE);
+#elif RUN_MODE == 3
+  LOGI("BOOT", "SPEAKER TEST: you should hear a beep every 2 seconds.");
+  ledSet(LED_IDLE);
 #else
-  Serial.println("SPEAKER TEST: you should hear a beep every 2 seconds.");
+  runDiagnostics();
 #endif
 #endif
   lastActivity = millis();
@@ -589,10 +922,11 @@ void setup() {
 void loop() {
   handleSerial();
   animate();
+  ledUpdate();
   static unsigned long lastDraw = 0, lastCycle = 0;
 
 #if RUN_MODE == 1
-  if (millis() - lastCycle > 2500 && !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); Serial.printf("face: %s\n", EMO_NAMES[emo]); }
+  if (millis() - lastCycle > 2500 && !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); LOGI("OLED", "face: %s", EMO_NAMES[emo]); }
   if (mouthDemo) talkAmp = (sin(millis() / 90.0) + 1) / 2;
   drawFace();
   delay(50);
@@ -600,6 +934,9 @@ void loop() {
   micMeter();
 #elif RUN_MODE == 3
   speakerTest();
+#elif RUN_MODE == 4
+  micMeter();      // keep a live level bar after the report, and keep the dashboard link alive
+  report();
 #else
   size_t n = readMono(frameBuf, FRAME);
   memcpy(preRing[preIdx], frameBuf, FRAME * 2);
@@ -607,6 +944,7 @@ void loop() {
 
   static int loud = 0;
   lastLevel = rmsOf(frameBuf, n);
+  if (n == 0) LOGE("MIC", "the I2S read returned no audio. The microphone clock is not running (check BCLK GPIO14 / WS GPIO25). Run RUN_MODE 4");
   if (lastLevel < threshold) {                       // follow the room's background noise slowly
     noiseEst = noiseEst * 0.99f + lastLevel * 0.01f;
     threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
@@ -614,13 +952,24 @@ void loop() {
   if (millis() < quietUntil || !listenOn) loud = 0;
   else if (lastLevel > threshold * 13 / 10) loud++; else loud = 0;
 
+  if (millis() > nextBeat) {
+    nextBeat = millis() + 10000;
+    LOGD("LIVE", "alive: mic level %d (room noise %d, recording starts above %d), memory %u, WiFi %d dBm, listening %s, last answer HTTP %d",
+         lastLevel, (int)noiseEst, threshold * 13 / 10, (unsigned)ESP.getFreeHeap(), WiFi.RSSI(), listenOn ? "yes" : "NO (muted)", lastCode);
+  }
   if (millis() - lastDraw > 100) {
     lastDraw = millis();
     if (holdUntil && millis() > holdUntil) { holdUntil = 0; setFace(listenOn ? HAPPY : SLEEPY); lastActivity = millis(); }
     if (!holdUntil && emo != SLEEPY && millis() - lastActivity > 60000) setFace(SLEEPY);
     drawFace();
   }
+  if (ledMode == LED_ERROR && millis() - lastActivity > 6000) ledSet(listenOn ? LED_IDLE : LED_MUTED);
   if (loud == 0) report();
-  if (loud >= 3) { loud = 0; conversation(); quietUntil = millis() + (lastCode == 200 ? 1200 : 3500); }
+  if (loud >= 3) {
+    loud = 0;
+    conversation();
+    if (ledMode == LED_THINK || ledMode == LED_REC) ledSet(listenOn ? LED_IDLE : LED_MUTED);
+    quietUntil = millis() + (lastCode == 200 ? 1200 : 3500);
+  }
 #endif
 }

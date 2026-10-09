@@ -12,11 +12,14 @@ Test without hardware: open http://localhost:8000 and type to the bot.
 """
 import asyncio
 import base64
+import collections
 import io
 import json
+import logging
 import os
 import re
 import shutil
+import socket
 import time
 import wave
 
@@ -42,6 +45,24 @@ def load_env_file(path: str = os.path.join(os.path.dirname(os.path.abspath(__fil
 
 
 load_env_file()
+
+# ---------- logging ----------
+# Every module logs with its own tag: boot, stt (hearing), llm (brain), tts (voice), net (requests), esp32 (the board).
+# The ESP32 sends its own log lines here too, so the whole system is in one place: this terminal and the dashboard.
+RING = collections.deque(maxlen=400)
+
+
+class RingHandler(logging.Handler):
+    def emit(self, record):
+        RING.append({"t": time.strftime("%H:%M:%S", time.localtime(record.created)), "tag": record.name,
+                     "level": record.levelname, "msg": record.getMessage()})
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)-6s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger().addHandler(RingHandler())
+logging.getLogger("httpx").setLevel(logging.WARNING)   # hide the library's own request lines, our logs say what matters
+log = logging.getLogger("boot")
+log_stt, log_llm, log_tts, log_net, log_esp = (logging.getLogger(n) for n in ("stt", "llm", "tts", "net", "esp32"))
 
 # The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
 # the next one answers, and the built-in offline replies are the last resort.
@@ -200,7 +221,7 @@ START_TIME = time.time()
 state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": [], "listen": True, "rec_total": 0, "rec_ignored": 0})   # live data for the dashboard
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
-print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
+log.info("loading the speech-to-text model '%s' (the first run downloads it, please wait)...", WHISPER_MODEL)
 stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
 llm = None
 if "anthropic" in CHAIN:
@@ -224,9 +245,38 @@ def available(name: str) -> bool:
 
 
 ACTIVE = [n for n in CHAIN if available(n)]
-print("LLM chain:", " -> ".join(CHAIN), "| ready:", ", ".join(ACTIVE) or "none", "| last resort: offline replies")
+log_llm.info("brain chain: %s | ready (have a key): %s | last resort: built-in replies", " -> ".join(CHAIN), ", ".join(ACTIVE) or "NONE (add keys to .env)")
 if OFFLINE:
-    print("LLM_MODE=offline: the LLM is skipped.")
+    log_llm.warning("LLM_MODE=offline: the brain is skipped, only built-in replies are used")
+def my_ips() -> list:
+    ips = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))   # no data is sent, this only finds which address the Mac uses on the network
+        ips.add(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+    try:
+        ips.update(i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except Exception:
+        pass
+    return sorted(i for i in ips if not i.startswith("127."))
+
+
+def startup_checks():
+    ff = shutil.which("ffmpeg")
+    if ff:
+        log.info("ffmpeg found at %s (needed for the voice)", ff)
+    else:
+        log.error("ffmpeg NOT FOUND: the speaker will be silent. Run:  brew install ffmpeg")
+    ips = my_ips()
+    log.info("this computer's network address: %s", ", ".join(ips) or "unknown")
+    log.info("put that address in SERVER_HOST in ai_bot.ino (it must start with the same numbers as the ESP32's IP)")
+    log.info("voice: %s (loudness x%s) | hearing: %s | dashboard: http://localhost:8000/dashboard", VOICE, TTS_GAIN, WHISPER_MODEL)
+
+
+startup_checks()
 app = FastAPI()
 
 
@@ -345,9 +395,9 @@ def call_one(name: str, system: str, messages: list) -> str:
             better = discover_model(name)
         except Exception as e:
             better = None
-            print(f"[{name}] could not list models: {e}")
+            log_llm.warning("[%s] could not list models: %s", name, e)
         if better and better != model:
-            print(f"[{name}] model '{model}' did not work, trying '{better}'")
+            log_llm.warning("[%s] model '%s' did not work, trying '%s'", name, model, better)
             r = post_chat(name, better, system, messages)
             if r.status_code < 400:
                 found_models[name] = better
@@ -370,7 +420,7 @@ def call_llm(system: str, messages: list):
             cooldown[name] = time.time() + COOLDOWN_SECONDS
             state["errors"][name] = str(getattr(e, "message", e))[:200]
             errors.append(f"{name}: {getattr(e, 'message', e)}")
-            print(f"[{name}] failed, trying the next one: {getattr(e, 'message', e)}")
+            log_llm.warning("[%s] failed, trying the next one: %s", name, getattr(e, "message", e))
     raise RuntimeError("; ".join(errors) or "no provider available")
 
 
@@ -400,7 +450,7 @@ def think(text: str) -> dict:
     try:
         raw, provider = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
     except Exception as e:  # every provider failed: keep talking with built-in replies
-        print("All LLM providers failed, using offline reply:", e)
+        log_llm.error("every brain failed, using a built-in reply: %s", e)
         state["provider"] = "offline"
         reply = finalize_emotion(text, {**offline_reply(text), "provider": "offline"})
         if not state["warned"]:
@@ -412,7 +462,7 @@ def think(text: str) -> dict:
     parsed = parse_reply(raw)
     reply = {"emotion": parsed["emotion"].lower(), "text": parsed["text"], "tone": parsed["tone"].lower(), "provider": provider}
     if not reply["text"]:   # the answer was empty or cut off: use a built-in reply for this turn
-        print(f"[{provider}] answer had no usable text ({raw[:100]!r}), using a built-in reply")
+        log_llm.warning("[%s] the answer had no usable text (%r), using a built-in reply", provider, raw[:100])
         off = offline_reply(text)
         reply["text"] = off["text"]
         reply["emotion"] = reply["emotion"] or off["emotion"]
@@ -432,16 +482,33 @@ def think(text: str) -> dict:
 
 
 async def speak(text: str) -> bytes:
-    """text -> mp3 (edge-tts) -> raw 16 kHz mono s16le PCM (ffmpeg)."""
+    """text -> mp3 (edge-tts, needs internet) -> raw 16 kHz mono s16le PCM (ffmpeg). Returns b"" if anything fails."""
+    t0 = time.time()
     mp3 = bytearray()
-    async for chunk in edge_tts.Communicate(text, VOICE, rate="+8%", pitch="+25Hz").stream():
-        if chunk["type"] == "audio":
-            mp3 += chunk["data"]
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-    )
-    pcm, _ = await proc.communicate(bytes(mp3))
+    try:
+        async for chunk in edge_tts.Communicate(text, VOICE, rate="+8%", pitch="+25Hz").stream():
+            if chunk["type"] == "audio":
+                mp3 += chunk["data"]
+    except Exception as e:
+        log_tts.error("the voice service failed: %s. edge-tts needs internet (it talks to Microsoft). Check your connection", e)
+        return b""
+    if not mp3:
+        log_tts.error("the voice service returned NO audio for %r. Internet down or blocked?", text[:60])
+        return b""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le",
+            "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        log_tts.error("ffmpeg is NOT installed, so the speaker will be silent. Run:  brew install ffmpeg")
+        return b""
+    pcm, err = await proc.communicate(bytes(mp3))
+    if proc.returncode != 0 or not pcm:
+        log_tts.error("ffmpeg failed (exit code %s): %s", proc.returncode, err.decode(errors="ignore")[:300])
+        return b""
+    log_tts.info("voice ready: %d ms of audio (%d KB) in %d ms, loudness x%s", len(pcm) // 32, len(pcm) // 1024, int((time.time() - t0) * 1000), TTS_GAIN)
     return pcm
 
 
@@ -454,7 +521,7 @@ def to_wav(pcm: bytes) -> bytes:
 
 def record(user: str, reply: dict):
     state["log"] = (state["log"] + [{"user": user, "emotion": reply["emotion"], "bot": reply["text"]}])[-30:]
-    print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you ({reply.get('tone', '-')}): {user!r} -> {reply['emotion']}: {reply['text']!r}")
+    log.info("[%s · %s] you (%s): %r -> face %s: %r", MODES[state["mode"]], reply.get("provider", "-"), reply.get("tone", "-"), user, reply["emotion"], reply["text"])
 
 
 def levels(pcm: bytes) -> dict:
@@ -490,17 +557,21 @@ async def respond(text: str) -> dict:
 @app.post("/talk")
 async def talk(request: Request):
     pcm = await request.body()
+    who = request.client.host if request.client else "?"
+    log_net.info("/talk from %s: received %d KB of audio (%d ms)", who, len(pcm) // 1024, len(pcm) // 32)
     if len(pcm) < SAMPLE_RATE * 2 * 0.4:  # under 0.4 s: ignore
         state["rec_total"] += 1
         state["rec_ignored"] += 1
+        log_stt.info("ignored: the recording is shorter than 0.4 s")
         return Response(status_code=204)
     t0 = time.time()
     mic = levels(pcm)
     state["rec_total"] += 1
     text = await asyncio.to_thread(transcribe, pcm)
     t1 = time.time()
-    print("heard:", repr(text), f"({mic['ms']} ms, level {mic['rms']}% / peak {mic['peak']}%)")
+    log_stt.info("heard %r from %d ms of audio (mic level %s%% average, %s%% peak) in %d ms", text, mic["ms"], mic["rms"], mic["peak"], int((t1 - t0) * 1000))
     if junk(text):
+        log_stt.info("ignored: no real speech in that recording (heard %r)%s", text, ". The mic level is very low" if mic["peak"] < 3 else "")
         state["rec_ignored"] += 1
         state["turn"] = {"at": time.time(), "source": "esp32", "heard": "", "note": "nothing understood", "mic": mic}
         return Response(status_code=204)
@@ -508,6 +579,12 @@ async def talk(request: Request):
     t2 = time.time()
     audio = await speak(reply["text"])
     t3 = time.time()
+    if not audio:
+        log_tts.error("SENDING AN EMPTY VOICE to the ESP32: the speaker will be SILENT. Fix the line above (ffmpeg or the voice service), then try again")
+    else:
+        log_net.info("answering: HTTP 200, %d KB voice, face %s, brain %s, total %.1f s (hearing %d ms, thinking %d ms, voice %d ms)",
+                     len(audio) // 1024, reply["emotion"], reply.get("provider", "-"), t3 - t0,
+                     int((t1 - t0) * 1000), int((t2 - t1) * 1000), int((t3 - t2) * 1000))
     state["turn"] = {"at": time.time(), "source": "esp32", "heard": text, "tone": reply.get("tone", "neutral"),
                      "emotion": reply["emotion"], "provider": reply.get("provider", "-"), "reply": reply["text"],
                      "mic": mic, "speaker": levels(audio),
@@ -549,6 +626,9 @@ async def get_state():
     dev = dict(state["device"])
     if dev:
         dev["age"] = round(time.time() - dev.get("seen", 0), 1)
+        if dev["age"] > 8 and state.get("device_online"):
+            state["device_online"] = False
+            log_esp.warning("ESP32 stopped reporting (last seen %.0f s ago). Is it powered, on WiFi, and is SERVER_HOST still right?", dev["age"])
     return {"mode": state["mode"], "modes": MODES, "log": state["log"], "device": dev, "turn": state["turn"],
             "lvl_hist": state["lvl_hist"], "health": health(), "listen": state["listen"],
             "rec_total": state["rec_total"], "rec_ignored": state["rec_ignored"], "emotions": EMOTIONS + ["listening"]}
@@ -557,6 +637,9 @@ async def get_state():
 @app.get("/api/device")  # the ESP32 reports here every second or two, and receives commands in the reply
 async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, emo: str = "", heap: int = 0,
                  up: int = 0, vol: int = 0, gain: int = 0):
+    if not state["device"] or time.time() - state["device"].get("seen", 0) > 10:
+        log_esp.info("ESP32 connected from %s (mic level %d, face %s, WiFi %d dBm)", request.client.host if request.client else "?", lvl, emo, rssi)
+        state["device_online"] = True
     state["device"] = {"lvl": lvl, "thr": thr, "rssi": rssi, "emo": emo, "heap": heap, "up": up, "vol": vol, "gain": gain,
                        "ip": request.client.host if request.client else "", "seen": time.time()}
     state["lvl_hist"] = (state["lvl_hist"] + [lvl])[-60:]
@@ -564,9 +647,24 @@ async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, em
     return PlainTextResponse(f"force={cmd.get('face', '-')} beep={1 if cmd.get('beep') else 0} listen={1 if state['listen'] else 0}\n")
 
 
+@app.post("/api/devlog")  # the ESP32 sends its own log lines here, so they show in this terminal and on the dashboard
+async def devlog(request: Request):
+    text = (await request.body()).decode("utf-8", errors="ignore")
+    for line in text.splitlines():
+        if line.strip():
+            (log_esp.error if " ERR " in line else log_esp.info)(line.strip())
+    return PlainTextResponse("ok\n")
+
+
+@app.get("/api/logs")
+async def get_logs(n: int = 200):
+    return list(RING)[-max(1, min(n, 400)):]
+
+
 @app.post("/api/cmd")  # dashboard buttons: show a face on the real OLED, or beep the real speaker
 async def cmd(request: Request):
     body = await request.json()
+    log_esp.info("dashboard command for the device: %s", body)
     if body.get("face") in EMOTIONS + ["listening"]:
         state["cmd"]["face"] = body["face"]
     if body.get("beep"):
@@ -654,4 +752,4 @@ async def dashboard():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)

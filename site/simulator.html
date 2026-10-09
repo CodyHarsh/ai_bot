@@ -308,6 +308,29 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <div class="hdr"><div><h2>Test run</h2>
     <p class="sub">Use this once the wiring is done. Go in order: each test proves one part, so a failure tells you exactly where to look. Tick a test when it passes.</p></div>
     <div class="card" style="padding:10px 16px"><div class="lbl" style="margin:0">Passed</div><div id="testcount" style="font:700 22px var(--display)">0 / 0</div></div></div>
+    <div class="card" style="margin-bottom:16px">
+      <h2 style="margin-bottom:6px">Something not working? Run the diagnostic first</h2>
+      <p style="margin:0 0 8px">One setting, one report. It checks power, the OLED, WiFi, the server, the microphone and the speaker, and tells you which wire to look at.</p>
+      <ol style="margin:0 0 10px;padding-left:20px">
+        <li>In <code>ai_bot.ino</code> set <code>#define RUN_MODE 4</code>, fill in WiFi and <code>SERVER_HOST</code>, and upload.</li>
+        <li>Open Tools &gt; Serial Monitor at <b>115200</b>. Follow the prompts: <b>stay quiet</b> for 2 seconds, then <b>clap</b> for 4 seconds, then <b>listen</b> for three beeps and type <code>y</code> or <code>n</code> and press Enter.</li>
+        <li>Everything between <code>PIP DIAGNOSTIC REPORT (start)</code> and <code>(END)</code> is the report. Each line says PASS or FAIL, with what to fix. Copy that block when you ask for help.</li>
+      </ol>
+      <p style="margin:0 0 6px"><b>Logs everywhere.</b> Every part writes tagged lines (BOOT, OLED, WIFI, NET, I2S, MIC, VAD, PLAY, CMD, LIVE). The board sends them to the server too, so the dashboard's <b>Live logs</b> panel and the server terminal show the ESP32 and the server in one place. Use "problems only" to see just the errors, and "Copy logs" to send them.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>LED (the small blue LED on the board)</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>fast blinking</td><td>starting up or joining WiFi</td></tr>
+          <tr><td>short blip every 2 seconds</td><td>ready and listening</td></tr>
+          <tr><td>solid on</td><td>hearing you (recording)</td></tr>
+          <tr><td>slow blinking</td><td>thinking (waiting for the server)</td></tr>
+          <tr><td>very fast blinking</td><td>speaking</td></tr>
+          <tr><td>three blinks, pause, repeat</td><td>something is wrong, read the log</td></tr>
+          <tr><td>tiny blip every 3 seconds</td><td>muted</td></tr>
+        </tbody>
+      </table></div>
+      <p style="margin:8px 0 0;color:var(--muted)">No LED blinks? Your board may have no LED on GPIO2. The logs and the report still work.</p>
+    </div>
     <div id="tests"></div>
   </section>
 
@@ -337,7 +360,7 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     OLED      VDD-&gt;3V3  GND-&gt;GND  SCK(SCL)-&gt;GPIO19  SDA-&gt;GPIO21
 
   ONE FILE does everything. Pick what it does with RUN_MODE below:
-    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test
+    0 = full voice bot   1 = face test only   2 = microphone test   3 = speaker test   4 = DIAGNOSTIC (finds what is broken)
   In mode 0 the board also reports to the live dashboard: http://YOUR-MAC-IP:8000/dashboard
 
   Serial Monitor (115200) commands:
@@ -351,13 +374,16 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 #include &lt;Adafruit_GFX.h&gt;
 #include &lt;Adafruit_SSD1306.h&gt;
 #include &lt;ESP_I2S.h&gt;
+#include &lt;esp_system.h&gt;
 
 // ================= CONFIG: edit these =================
 const char* WIFI_SSID   = "YOUR_WIFI_NAME";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 const char* SERVER_HOST = "192.168.1.50";   // your laptop's IP, where server.py runs
 const int   SERVER_PORT = 8000;
-#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test
+#define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test, 4 = DIAGNOSTIC report
+#define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
+#define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
 #define MIC_SHIFT 12         // mic gain: lower = louder. 14 = quiet, 12 = 4x louder, 11 = 8x, 10 = 16x
 // ======================================================
@@ -379,6 +405,65 @@ const int   SERVER_PORT = 8000;
 
 Adafruit_SSD1306 display(128, 64, &amp;Wire, -1);
 I2SClass i2s;
+
+// ================= logging =================
+// Every module writes tagged lines like:  [  12345] INFO MIC   calibrated: ...
+//   tags: BOOT OLED WIFI NET I2S MIC VAD PLAY CMD LIVE DIAG.  Lines go to the Serial Monitor and, when the
+//   server is reachable, to the dashboard log panel and the server terminal too.
+String logBuf;   // log lines waiting to be sent to the dashboard
+void logLine(const char* lvl, const char* tag, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void logLine(const char* lvl, const char* tag, const char* fmt, ...) {
+  char msg[220];
+  va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof(msg), fmt, ap); va_end(ap);
+  char line[280];
+  snprintf(line, sizeof(line), "[%7lu] %-4s %-5s %s", millis(), lvl, tag, msg);
+  Serial.println(line);
+  logBuf += line; logBuf += "\n";
+  if (logBuf.length() &gt; 1800) logBuf = logBuf.substring(logBuf.length() - 1200);   // keep the newest lines
+}
+#define LOGE(tag, ...) do { if (LOG_LEVEL &gt;= 1) logLine("ERR", tag, __VA_ARGS__); } while (0)
+#define LOGI(tag, ...) do { if (LOG_LEVEL &gt;= 2) logLine("INFO", tag, __VA_ARGS__); } while (0)
+#define LOGD(tag, ...) do { if (LOG_LEVEL &gt;= 3) logLine("DBG", tag, __VA_ARGS__); } while (0)
+
+// ================= status LED =================
+//   fast blinking ........ starting up / joining WiFi
+//   short blip every 2 s .. ready and listening
+//   solid on ............... hearing you (recording)
+//   slow blinking .......... thinking (waiting for the server)
+//   very fast blinking ..... speaking
+//   three blinks, pause .... something is wrong (read the log)
+//   tiny blip every 3 s .... muted
+enum LedMode { LED_BOOT, LED_IDLE, LED_REC, LED_THINK, LED_SPEAK, LED_ERROR, LED_MUTED };
+LedMode ledMode = LED_BOOT;
+void ledSet(LedMode m) { ledMode = m; }
+void ledUpdate() {
+  if (PIN_LED &lt; 0) return;
+  unsigned long t = millis();
+  bool on = false;
+  switch (ledMode) {
+    case LED_BOOT:  on = (t / 120) % 2; break;
+    case LED_IDLE:  on = (t % 2000) &lt; 80; break;
+    case LED_REC:   on = true; break;
+    case LED_THINK: on = (t / 300) % 2; break;
+    case LED_SPEAK: on = (t / 70) % 2; break;
+    case LED_ERROR: { unsigned long m = t % 1800; on = (m &lt; 150) || (m &gt; 300 &amp;&amp; m &lt; 450) || (m &gt; 600 &amp;&amp; m &lt; 750); break; }
+    case LED_MUTED: on = (t % 3000) &lt; 40; break;
+  }
+  digitalWrite(PIN_LED, on ? HIGH : LOW);
+}
+const char* resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "power on";
+    case ESP_RST_SW:        return "software restart";
+    case ESP_RST_PANIC:     return "CRASH (panic)";
+    case ESP_RST_INT_WDT:   return "watchdog (interrupt)";
+    case ESP_RST_TASK_WDT:  return "watchdog (task stuck)";
+    case ESP_RST_WDT:       return "watchdog";
+    case ESP_RST_BROWNOUT:  return "BROWN-OUT (power dipped: weak USB cable or port, or the speaker draws too much)";
+    case ESP_RST_EXT:       return "reset button";
+    default:                return "other";
+  }
+}
 
 // ---------- emotions ----------
 enum Emotion { HAPPY, EXCITED, LOVE, WINK, JOY, SILLY, SLEEPY, SAD, CRY, POUT,
@@ -638,7 +723,9 @@ void calibrate() {
   int noise = cnt ? total / cnt : 50;
   noiseEst = noise;
   threshold = max(noise * 3, noise + 150);
-  Serial.printf("Noise floor %d, speech threshold %d\n", noise, threshold);
+  LOGI("MIC", "calibrated: background noise level %d, speech must exceed %d (starts a recording above %d)", noise, threshold, threshold * 13 / 10);
+  if (noise == 0) LOGE("MIC", "the microphone sends NOTHING (level 0). Check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25, L/R=GND. Run RUN_MODE 4 for the full check");
+  else if (noise &gt; 3000) LOGE("MIC", "the background level is very high (%d): a noisy room, or the mic SD wire is floating. Try RUN_MODE 4", noise);
 }
 
 void sendChunk(WiFiClient&amp; c, const int16_t* data, size_t samples) {
@@ -683,6 +770,7 @@ void micMeter() {
   static int peak = 0;
   size_t n = readMono(frameBuf, FRAME);
   int level = rmsOf(frameBuf, n);
+  lastLevel = level;
   peak = max(level, (int)(peak * 0.97f));
   if (millis() - last &lt; 100) return;
   last = millis();
@@ -702,7 +790,8 @@ void micMeter() {
 // RUN_MODE 3: two beeps every 2 seconds
 void speakerTest() {
   message("SPEAKER TEST", "beep boop");
-  Serial.println("beep");
+  LOGI("PLAY", "beep (volume %d%%). If you hear nothing, run RUN_MODE 4", SPEAKER_VOLUME);
+  ledSet(LED_SPEAK); ledUpdate();
   playTone(660, 150);
   playTone(880, 250);
   playSilence(100);
@@ -717,13 +806,22 @@ Emotion emotionFromName(String s) {
 
 void receiveAndPlay(WiFiClient&amp; c) {
   unsigned long t0 = millis(), lastD = 0;
+  ledSet(LED_THINK);
+  LOGD("NET", "waiting for the server's answer (hearing, thinking, making the voice)...");
   while (!c.available() &amp;&amp; c.connected() &amp;&amp; millis() - t0 &lt; 30000) {
     if (millis() - lastD &gt; 100) { animate(); drawFace(); lastD = millis(); }
+    ledUpdate();
     delay(5);
+  }
+  unsigned long waited = millis() - t0;
+  if (!c.available()) {
+    LOGE("NET", "no answer from the server after %lu ms. Look at the server terminal: it may be busy or have crashed", waited);
+    lastCode = -1; setFace(SAD, 2500); ledSet(LED_ERROR);
+    return;
   }
   String status = c.readStringUntil('\n');
   int code = status.substring(9, 12).toInt();
-  long remaining = -1; String emoStr = "happy", text = "";
+  long remaining = -1; String emoStr = "happy", text = "", provider = "-", tone = "-";
   while (true) {
     String l = c.readStringUntil('\n');
     if (l.length() &lt;= 1) break;
@@ -732,23 +830,41 @@ void receiveAndPlay(WiFiClient&amp; c) {
     if (low.startsWith("content-length:")) remaining = l.substring(15).toInt();
     else if (low.startsWith("x-emotion:")) { emoStr = l.substring(10); emoStr.trim(); }
     else if (low.startsWith("x-text:")) { text = l.substring(7); text.trim(); }
+    else if (low.startsWith("x-provider:")) { provider = l.substring(11); provider.trim(); }
+    else if (low.startsWith("x-tone:")) { tone = l.substring(7); tone.trim(); }
   }
   lastCode = code;
-  Serial.printf("Server: HTTP %d, emotion=%s, text=%s\n", code, emoStr.c_str(), text.c_str());
-  if (code != 200) { setFace(code == 204 ? HAPPY : SAD, 2500); return; }
+  LOGI("NET", "server answered HTTP %d after %lu ms: tone=%s face=%s brain=%s", code, waited, tone.c_str(), emoStr.c_str(), provider.c_str());
+  if (text.length()) LOGI("NET", "reply: %s", text.c_str());
+  if (code == 204) LOGI("NET", "the server understood no speech in that recording (too noisy, too quiet, or nobody spoke)");
+  if (code != 200) {
+    if (code != 204) { LOGE("NET", "unexpected HTTP %d. Read the server terminal for the error", code); ledSet(LED_ERROR); }
+    setFace(code == 204 ? HAPPY : SAD, 2500);
+    return;
+  }
+  if (remaining == 0) LOGE("PLAY", "the server sent an EMPTY voice (Content-Length 0), so the speaker has nothing to play. The problem is on the Mac: check ffmpeg and the voice service in the server terminal, or press Run self-test on the dashboard");
+  else LOGI("PLAY", "voice incoming: %ld bytes (about %ld ms)", remaining, remaining / 32);
 
   setFace(emotionFromName(emoStr));
   talking = true;
+  ledSet(LED_SPEAK);
   alignas(4) static uint8_t buf[512];
   static int32_t out[2 * 256];
   int have = 0;
-  unsigned long lastData = millis(), lastDraw = 0;
+  unsigned long lastData = millis(), lastDraw = 0, p0 = millis(), stalls = 0;
+  unsigned long bytesIn = 0, bytesOut = 0, shortWrites = 0;
+  int peakOut = 0;
   while (remaining != 0 &amp;&amp; (c.connected() || c.available())) {
     int avail = c.available();
-    if (avail &lt;= 0) { if (millis() - lastData &gt; 4000) break; delay(2); continue; }
+    if (avail &lt;= 0) {
+      if (millis() - lastData &gt; 4000) { LOGE("PLAY", "the voice stopped arriving (4 s gap): WiFi or server problem"); break; }
+      delay(2); ledUpdate(); continue;
+    }
+    if (millis() - lastData &gt; 300) stalls++;
     int got = c.read(buf + have, min(avail, (int)sizeof(buf) - have));
     if (got &lt;= 0) continue;
     lastData = millis();
+    bytesIn += got;
     have += got;
     if (remaining &gt; 0) remaining -= got;
     int ns = have / 2;
@@ -757,31 +873,47 @@ void receiveAndPlay(WiFiClient&amp; c) {
     for (int i = 0; i &lt; ns; i++) {
       int32_t v = amplify(s[i]);
       e += abs(v);
+      if (abs(v) &gt; peakOut) peakOut = abs(v);
       out[2 * i] = out[2 * i + 1] = v &lt;&lt; 16;
     }
-    i2s.write((uint8_t*)out, ns * 8);
+    size_t w = i2s.write((uint8_t*)out, ns * 8);
+    bytesOut += w;
+    if (w != (size_t)(ns * 8)) shortWrites++;
     talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
     if (have &amp; 1) { buf[0] = buf[have - 1]; have = 1; } else have = 0;
     if (millis() - lastDraw &gt; 90) { animate(); drawFace(); lastDraw = millis(); }
+    ledUpdate();
   }
   playSilence(120);
   talking = false; talkAmp = 0;
+  LOGI("PLAY", "played %lu voice bytes in %lu ms, %lu bytes sent to the amplifier, loudest sample %d%% of full scale", bytesIn, millis() - p0, bytesOut, peakOut * 100 / 32767);
+  if (bytesIn &gt; 0 &amp;&amp; peakOut &lt; 100) LOGE("PLAY", "the voice data is silent (all near zero). The server made an empty or silent voice: check the server terminal");
+  if (shortWrites &gt; 0) LOGE("PLAY", "%lu I2S writes were cut short: the speaker output is not running properly. Run RUN_MODE 4", shortWrites);
+  if (stalls &gt; 3) LOGD("PLAY", "the voice arrived in %lu bursts (weak WiFi may cause stutter)", stalls);
+  if (remaining &gt; 0) LOGE("PLAY", "the voice was cut short: %ld bytes never arrived", remaining);
   for (int i = 0; i &lt; 25; i++) readMono(frameBuf, FRAME);   // drop mic data captured while speaking (stops it hearing itself)
   setFace(emotionFromName(emoStr), 4000);
   lastActivity = millis();
+  ledSet(listenOn ? LED_IDLE : LED_MUTED);
 }
 
 void conversation() {
   lastActivity = millis();
   setFace(LISTENING); drawFace();
+  ledSet(LED_REC); ledUpdate();
+  LOGI("VAD", "speech detected: level %d is above the threshold %d, recording...", lastLevel, threshold);
   WiFiClient c;
   c.setNoDelay(true);
+  unsigned long tc = millis();
   if (!c.connect(SERVER_HOST, SERVER_PORT, 3000)) {
-    Serial.println("Cannot reach server: check SERVER_HOST, same WiFi, firewall");
+    LOGE("NET", "cannot connect to %s:%d after %lu ms (WiFi %s, signal %d dBm). Check SERVER_HOST is your Mac's current IP, same WiFi, firewall, and that the server is running",
+         SERVER_HOST, SERVER_PORT, millis() - tc, WiFi.status() == WL_CONNECTED ? "connected" : "DISCONNECTED", WiFi.RSSI());
     setFace(CRY, 3000);
+    ledSet(LED_ERROR);
     if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();
     return;
   }
+  LOGD("NET", "connected to the server in %lu ms", millis() - tc);
   c.print(String("POST /talk HTTP/1.1\r\nHost: ") + SERVER_HOST +
           "\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
   for (int k = 0; k &lt; PRE_FRAMES; k++) sendChunk(c, preRing[(preIdx + k) % PRE_FRAMES], FRAME);
@@ -800,10 +932,13 @@ void conversation() {
     if (++bn == 5) { sendChunk(c, batch, FRAME * 5); bn = 0; }
     frames++;
     if (millis() - lastDraw &gt; 200) { animate(); drawFace(); lastDraw = millis(); }
+    ledUpdate();
   }
   if (bn) sendChunk(c, batch, FRAME * bn);
   c.print("0\r\n\r\n");
-  Serial.printf("Sent %d ms of audio\n", frames * 20);
+  bool hitLimit = frames &gt;= MAX_FRAMES;
+  LOGI("VAD", "recording ended (%s) after %d ms, loudest level %d, sent %d KB of audio", hitLimit ? "TIME LIMIT" : "silence", frames * 20, peak, frames * FRAME * 2 / 1024);
+  if (hitLimit) LOGE("VAD", "the recording never went quiet: constant noise or voices nearby (peak %d, quiet line %d). Mute with 'm', or move the mic away. Dashboard shows the live level", peak, max(threshold, peak * 3 / 10));
 
   setFace(THINKING);
   receiveAndPlay(c);
@@ -814,18 +949,58 @@ void setServerMode(int m) {
   HTTPClient http;
   http.begin(SERVER_HOST, SERVER_PORT, String("/mode?m=") + m);
   int code = http.GET();
-  Serial.printf("mode %d -&gt; HTTP %d\n", m, code);
+  LOGI("CMD", "mode %d -&gt; server answered HTTP %d", m, code);
   http.end();
 }
 
 // Tells the dashboard on your Mac how the device is doing (mic level, face, WiFi signal, memory),
 // and receives its commands in the reply: show a face, beep the speaker. Open http://YOUR-MAC-IP:8000/dashboard
-unsigned long nextReport = 0;
+unsigned long nextReport = 0, nextBeat = 0;
+int reportFails = 0;
+bool linkUp = false;
+
+int probeServer() {   // one-off check that the server answers: used at start-up and in the diagnostic
+  unsigned long t0 = millis();
+  WiFiClient c;
+  if (!c.connect(SERVER_HOST, SERVER_PORT, 2500)) {
+    LOGE("NET", "cannot connect to %s:%d after %lu ms. Check SERVER_HOST (your Mac's CURRENT IP), same WiFi, firewall, and that the server is running", SERVER_HOST, SERVER_PORT, millis() - t0);
+    return -1;
+  }
+  unsigned long tc = millis() - t0;
+  c.print(String("GET /api/state HTTP/1.1\r\nHost: ") + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
+  unsigned long t1 = millis();
+  while (!c.available() &amp;&amp; c.connected() &amp;&amp; millis() - t1 &lt; 2000) delay(1);
+  String status = c.readStringUntil('\n');
+  c.stop();
+  int code = status.substring(9, 12).toInt();
+  LOGI("NET", "server %s:%d reachable: connected in %lu ms, GET /api/state -&gt; HTTP %d", SERVER_HOST, SERVER_PORT, tc, code);
+  return code;
+}
+
+void shipLogs() {   // sends pending log lines to the server so they show on the dashboard and in the server terminal
+  if (logBuf.length() == 0) return;
+  WiFiClient lc;
+  if (!lc.connect(SERVER_HOST, SERVER_PORT, 300)) return;
+  String body = logBuf;
+  logBuf = "";
+  lc.print(String("POST /api/devlog HTTP/1.1\r\nHost: ") + SERVER_HOST + "\r\nContent-Type: text/plain\r\nContent-Length: " +
+           body.length() + "\r\nConnection: close\r\n\r\n" + body);
+  unsigned long t = millis();
+  while (!lc.available() &amp;&amp; lc.connected() &amp;&amp; millis() - t &lt; 300) delay(1);
+  lc.stop();
+}
+
 void report() {
   unsigned long now = millis();
   if (now &lt; nextReport || WiFi.status() != WL_CONNECTED) return;
   WiFiClient c;
-  if (!c.connect(SERVER_HOST, SERVER_PORT, 300)) { nextReport = now + 10000; return; }   // server not up: try again in 10 s
+  if (!c.connect(SERVER_HOST, SERVER_PORT, 300)) {   // server not up: try again in 10 s
+    if (linkUp || reportFails == 0) LOGE("NET", "dashboard link down: cannot reach %s:%d (is the server running? is SERVER_HOST right?)", SERVER_HOST, SERVER_PORT);
+    linkUp = false; reportFails++;
+    nextReport = now + 10000;
+    return;
+  }
+  if (!linkUp) { LOGI("NET", "dashboard link up: reporting to %s:%d", SERVER_HOST, SERVER_PORT); linkUp = true; reportFails = 0; }
   c.print(String("GET /api/device?lvl=") + lastLevel + "&amp;thr=" + threshold + "&amp;rssi=" + WiFi.RSSI() + "&amp;emo=" + EMO_NAMES[emo] +
           "&amp;heap=" + ESP.getFreeHeap() + "&amp;up=" + (now / 1000) + "&amp;vol=" + SPEAKER_VOLUME + "&amp;gain=" + MIC_SHIFT +
           " HTTP/1.1\r\nHost: " + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
@@ -833,7 +1008,7 @@ void report() {
   while (!c.available() &amp;&amp; c.connected() &amp;&amp; millis() - t0 &lt; 500) delay(1);
   c.readStringUntil('\n');                                              // status line
   while (true) { String l = c.readStringUntil('\n'); if (l.length() &lt;= 1) break; }   // headers
-  String body = c.readStringUntil('\n');                                // e.g. "force=wink beep=0"
+  String body = c.readStringUntil('\n');                                // e.g. "force=wink beep=0 listen=1"
   c.stop();
   nextReport = millis() + 1500;
   int f = body.indexOf("force=");
@@ -842,14 +1017,15 @@ void report() {
     int sp = name.indexOf(' ');
     if (sp &gt;= 0) name = name.substring(0, sp);
     name.trim();
-    for (int i = 0; i &lt; EMO_COUNT; i++) if (name == EMO_NAMES[i]) { setFace((Emotion)i, 3500); break; }
+    for (int i = 0; i &lt; EMO_COUNT; i++) if (name == EMO_NAMES[i]) { LOGI("CMD", "dashboard asked for face '%s'", name.c_str()); setFace((Emotion)i, 3500); break; }
   }
   int li = body.indexOf("listen=");
   if (li &gt;= 0) {
     bool on = body.charAt(li + 7) != '0';
-    if (on != listenOn) { listenOn = on; setFace(on ? HAPPY : SLEEPY); Serial.println(on ? "listening: on" : "listening: OFF (muted)"); }
+    if (on != listenOn) { listenOn = on; setFace(on ? HAPPY : SLEEPY); ledSet(on ? LED_IDLE : LED_MUTED); LOGI("CMD", "%s", on ? "listening: on" : "listening: OFF (muted from the dashboard)"); }
   }
-  if (body.indexOf("beep=1") &gt;= 0) { playTone(660, 120); playTone(880, 160); playSilence(60); }
+  if (body.indexOf("beep=1") &gt;= 0) { LOGI("CMD", "dashboard asked for a beep"); ledSet(LED_SPEAK); playTone(660, 120); playTone(880, 160); playSilence(60); ledSet(listenOn ? LED_IDLE : LED_MUTED); }
+  shipLogs();
 }
 
 void handleSerial() {
@@ -861,46 +1037,226 @@ void handleSerial() {
     else if (ch == 'n') setFace((Emotion)((emo + 1) % EMO_COUNT));
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
-    else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); Serial.println(listenOn ? "listening: on" : "listening: OFF (muted)"); }
+    else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); ledSet(listenOn ? LED_IDLE : LED_MUTED); LOGI("CMD", "%s", listenOn ? "listening: on" : "listening: OFF (muted)"); }
     else if (ch &gt;= '1' &amp;&amp; ch &lt;= '4' &amp;&amp; RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
 }
 
 // ================= setup / loop =================
+// ================= RUN_MODE 4: guided hardware diagnostic =================
+// Checks power, OLED, WiFi, the server, the microphone (raw data, both channels, reaction to sound) and the
+// speaker (real-time output + you confirm you heard it). Prints one report you can copy and send for help.
+int diagFails = 0;
+String diagSummary;
+void check(bool ok, const char* name, const char* detail) {
+  LOGI("DIAG", "%s  %s%s%s", ok ? "PASS" : "FAIL", name, detail[0] ? "  -&gt;  " : "", detail);
+  diagSummary += String(ok ? "PASS  " : "FAIL  ") + name + "\n";
+  if (!ok) diagFails++;
+}
+
+struct Chan { long n = 0, zeros = 0; int32_t mn = INT32_MAX, mx = INT32_MIN; double sum = 0, sq = 0; };
+void chanAdd(Chan&amp; c, int32_t raw) {
+  int32_t v = raw &gt;&gt; 8;                       // the mic sends 24-bit samples in the top of a 32-bit slot
+  c.n++;
+  if (v == 0) c.zeros++;
+  if (v &lt; c.mn) c.mn = v;
+  if (v &gt; c.mx) c.mx = v;
+  c.sum += v; c.sq += (double)v * v;
+}
+long chanAc(const Chan&amp; c) {                  // how much the signal wiggles (noise + sound), in 24-bit units
+  if (!c.n) return 0;
+  double m = c.sum / c.n, var = c.sq / c.n - m * m;
+  return var &gt; 0 ? (long)sqrt(var) : 0;
+}
+bool chanAlive(const Chan&amp; c) { return c.n &gt; 0 &amp;&amp; c.zeros &lt; c.n * 99 / 100 &amp;&amp; c.mx != c.mn; }
+
+long captureRaw(Chan&amp; L, Chan&amp; R, int ms) {   // returns how many stereo frames arrived
+  static int32_t tmp[2 * 160];
+  long frames = 0, target = (long)SAMPLE_RATE * ms / 1000;
+  unsigned long t0 = millis();
+  int empty = 0;
+  while (frames &lt; target &amp;&amp; millis() - t0 &lt; (unsigned long)ms + 1500) {
+    size_t got = i2s.readBytes((char*)tmp, sizeof(tmp)) / 8;
+    if (!got) { if (++empty &gt; 5) break; continue; }
+    for (size_t i = 0; i &lt; got; i++) { chanAdd(L, tmp[2 * i]); chanAdd(R, tmp[2 * i + 1]); }
+    frames += got;
+    ledUpdate();
+  }
+  return frames;
+}
+
+void runDiagnostics() {
+  diagFails = 0; diagSummary = "";
+  char buf[200];
+  LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (start) ===================");
+  LOGI("DIAG", "Copy everything from this line to the END line and send it for help.");
+  LOGI("DIAG", "Pins: BCLK=%d WS=%d mic SD=%d amp DIN=%d | OLED SDA=%d SCL=%d | server %s:%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, SERVER_HOST, SERVER_PORT);
+  LOGI("DIAG", "Settings: MIC_SHIFT %d, SPEAKER_VOLUME %d%%", MIC_SHIFT, SPEAKER_VOLUME);
+
+  // 1. power
+  LOGI("DIAG", "--- 1. Board and power ---");
+  LOGI("DIAG", "chip %s rev %d, %d core(s), %d MHz, flash %u KB, free memory %u bytes", ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(), (int)ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1024), (unsigned)ESP.getFreeHeap());
+  LOGI("DIAG", "last reset reason: %s", resetReasonText());
+  check(esp_reset_reason() != ESP_RST_BROWNOUT, "power is stable (no brown-out)", esp_reset_reason() == ESP_RST_BROWNOUT ? "the board browned out. Use a short good USB cable in a direct port, or lower SPEAKER_VOLUME" : "");
+
+  // 2. OLED + I2C
+  LOGI("DIAG", "--- 2. OLED (I2C scan) ---");
+  String addrs; int found = 0; bool has3c = false;
+  for (uint8_t a = 8; a &lt; 120; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) { char ab[10]; snprintf(ab, sizeof(ab), " 0x%02X", a); addrs += ab; found++; if (a == OLED_ADDR) has3c = true; }
+  }
+  LOGI("DIAG", "I2C devices found: %d:%s", found, addrs.c_str());
+  check(has3c, "OLED answers on I2C", has3c ? "" : "not found at the address in the sketch. Check VDD=3V3, GND, SCK=GPIO19, SDA=GPIO21");
+
+  // 3. WiFi + server
+  LOGI("DIAG", "--- 3. WiFi and server ---");
+  bool wifi = WiFi.status() == WL_CONNECTED;
+  check(wifi, "WiFi connected", wifi ? "" : "wrong name or password, or a 5 GHz network (the ESP32 needs 2.4 GHz)");
+  if (wifi) {
+    LOGI("DIAG", "network '%s': my IP %s, router %s, signal %d dBm", WIFI_SSID, WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
+    snprintf(buf, sizeof(buf), "signal %d dBm (stronger than -80 is good)", WiFi.RSSI());
+    check(WiFi.RSSI() &gt; -80, "WiFi signal is strong enough", WiFi.RSSI() &gt; -80 ? "" : buf);
+    int code = probeServer();
+    snprintf(buf, sizeof(buf), "no answer from %s:%d. Is SERVER_HOST your Mac's CURRENT IP (ipconfig getifaddr en0)? Same WiFi? Firewall? Server running?", SERVER_HOST, SERVER_PORT);
+    check(code == 200, "the server answers", code == 200 ? "" : buf);
+  }
+
+  // 4. microphone, raw
+  LOGI("DIAG", "--- 4. Microphone: stay QUIET for 2 seconds ---");
+  ledSet(LED_THINK); ledUpdate();
+  Chan L, R;
+  long frames = captureRaw(L, R, 2000);
+  LOGI("DIAG", "I2S read %ld frames (expected about %d)", frames, SAMPLE_RATE * 2);
+  LOGI("DIAG", "LEFT  channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", L.n ? L.zeros * 100 / L.n : 0L, (long)L.mn, (long)L.mx, chanAc(L));
+  LOGI("DIAG", "RIGHT channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", R.n ? R.zeros * 100 / R.n : 0L, (long)R.mn, (long)R.mx, chanAc(R));
+  check(frames &gt; SAMPLE_RATE, "I2S is receiving audio frames", frames &gt; SAMPLE_RATE ? "" : "nothing arrives: the I2S clock is not running. Check BCLK=GPIO14 and WS=GPIO25 wires");
+  bool lAlive = chanAlive(L), rAlive = chanAlive(R);
+  const char* micHint = "";
+  if (!lAlive &amp;&amp; rAlive) micHint = "the data is on the RIGHT channel: connect the mic's L/R pin to GND (not 3V3)";
+  else if (!lAlive) micHint = "all zeros or constant: check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25 and L/R=GND, and that SD is not swapped with another wire";
+  check(lAlive, "microphone sends data on the LEFT channel", micHint);
+  long ac = chanAc(L);
+  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic shows roughly 300 to 20000 in a quiet room. Very low = SD floating or disconnected, very high = shorted or noisy wiring", ac);
+  check(lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 2000000, "microphone noise level looks like a real microphone", (lAlive &amp;&amp; ac &gt; 100 &amp;&amp; ac &lt; 2000000) ? "" : buf);
+  bool stuckHigh = L.n &amp;&amp; fabs(L.sum / L.n) &gt; 6000000.0;
+  check(!stuckHigh, "microphone data is not stuck at full scale", stuckHigh ? "the SD line is stuck high: wire shorted to 3V3, or the mic has no ground" : "");
+
+  // 5. microphone reacts to sound
+  LOGI("DIAG", "--- 5. Microphone reaction: CLAP or speak LOUDLY for the next 4 seconds ---");
+  ledSet(LED_REC); ledUpdate();
+  int peakLvl = 0, minLvl = 32767;
+  unsigned long t0 = millis();
+  while (millis() - t0 &lt; 4000) {
+    size_t n = readMono(frameBuf, FRAME);
+    int lv = rmsOf(frameBuf, n);
+    if (lv &gt; peakLvl) peakLvl = lv;
+    if (lv &lt; minLvl) minLvl = lv;
+    ledUpdate();
+  }
+  LOGI("DIAG", "quietest level %d, loudest level %d (levels after MIC_SHIFT %d)", minLvl, peakLvl, MIC_SHIFT);
+  bool reacts = peakLvl &gt; 200 &amp;&amp; peakLvl &gt; minLvl * 3;
+  snprintf(buf, sizeof(buf), "quiet %d, loud %d. Clap closer to the mic. If still flat, lower MIC_SHIFT by 1 or recheck the mic wiring", minLvl, peakLvl);
+  check(reacts, "microphone reacts to sound", reacts ? "" : buf);
+
+  // 6. speaker
+  LOGI("DIAG", "--- 6. Speaker: three beeps, LISTEN ---");
+  ledSet(LED_SPEAK);
+  bool paced = true;
+  for (int k = 0; k &lt; 3; k++) {
+    unsigned long b0 = millis();
+    playTone(880 - k * 140, 400);
+    unsigned long dt = millis() - b0;
+    LOGI("DIAG", "beep %d: 400 ms of audio went out in %lu ms", k + 1, dt);
+    if (dt &lt; 250 || dt &gt; 1500) paced = false;
+    delay(150);
+  }
+  playSilence(100);
+  check(paced, "speaker data leaves in real time (I2S output is running)", paced ? "" : "the output finished instantly or stalled: the I2S clock is not running. Check BCLK=GPIO14 and WS=GPIO25");
+  LOGI("DIAG", "&gt;&gt;&gt; Did you HEAR three beeps? Type  y  or  n  in the Serial Monitor box and press Enter (15 s)");
+  int heard = -1;
+  unsigned long a0 = millis();
+  while (millis() - a0 &lt; 15000 &amp;&amp; heard &lt; 0) {
+    ledUpdate();
+    if (Serial.available()) { char ch = Serial.read(); if (ch == 'y' || ch == 'Y') heard = 1; else if (ch == 'n' || ch == 'N') heard = 0; }
+    delay(10);
+  }
+  if (heard &lt; 0) LOGI("DIAG", "no answer typed, the speaker result is unknown");
+  else check(heard == 1, "you heard the beeps", heard == 1 ? "" : "no sound. Check amp VIN=5V, GND, DIN=GPIO22, BCLK=GPIO14, LRC=GPIO25, speaker wires on the amp's screw terminals (never GND), and that the amp's SD pin is not tied to GND");
+
+  // result
+  LOGI("DIAG", "--- RESULT ---");
+  LOGI("DIAG", "%s", diagSummary.c_str());
+  if (diagFails == 0) LOGI("DIAG", "ALL CHECKS PASSED. The hardware is fine. If the bot still misbehaves, the problem is the server or the room noise.");
+  else LOGE("DIAG", "%d CHECK(S) FAILED. Fix the first FAIL above first, then run this again.", diagFails);
+  LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (END) ===================");
+  ledSet(diagFails ? LED_ERROR : LED_IDLE);
+}
+
 void setup() {
   Serial.begin(115200);
+  delay(300);
+  if (PIN_LED &gt;= 0) pinMode(PIN_LED, OUTPUT);
+  ledSet(LED_BOOT); ledUpdate();
   Wire.begin(OLED_SDA, OLED_SCL);
   Wire.setClock(400000);
+  LOGI("BOOT", "==============================================");
+  LOGI("BOOT", "Pip starting. RUN_MODE %d, log level %d", RUN_MODE, LOG_LEVEL);
+  LOGI("BOOT", "chip %s rev %d, %d core(s) at %d MHz, free memory %u bytes", ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(), (int)ESP.getCpuFreqMHz(), (unsigned)ESP.getFreeHeap());
+  LOGI("BOOT", "last reset: %s", resetReasonText());
+  LOGI("BOOT", "pins: I2S BCLK=%d WS=%d | mic SD=%d | amp DIN=%d | OLED SDA=%d SCL=%d | LED=%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, PIN_LED);
+  LOGI("BOOT", "settings: mic gain MIC_SHIFT=%d, speaker volume %d%%", MIC_SHIFT, SPEAKER_VOLUME);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("OLED init failed: check power, SDA/SCL, controller and I2C address.");
-    while (true) delay(1000);
+    LOGE("OLED", "display not found at 0x%02X. Check VDD=3V3, GND, SCK=GPIO%d, SDA=GPIO%d", OLED_ADDR, OLED_SCL, OLED_SDA);
+    ledSet(LED_ERROR);
+    while (true) { ledUpdate(); delay(20); }
   }
+  LOGI("OLED", "display found at 0x%02X", OLED_ADDR);
   randomSeed(micros());
   setFace(STARRY, 1500); drawFace();
 
 #if RUN_MODE == 1
-  Serial.println("FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
+  LOGI("BOOT", "FACE TEST: faces cycle automatically. n/p = next/previous, k = talking mouth.");
+  ledSet(LED_IDLE);
 #else
-#if RUN_MODE == 0
+#if RUN_MODE == 0 || RUN_MODE == 4
   message("Connecting WiFi...", WIFI_SSID);
+  LOGI("WIFI", "joining '%s'...", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
-  Serial.println("\nESP32 IP: " + WiFi.localIP().toString());
+  unsigned long w0 = millis(), lastNote = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100); ledUpdate();
+    if (millis() - lastNote &gt; 5000) {
+      lastNote = millis();
+      LOGE("WIFI", "not connected after %lu s (status %d). Wrong name or password, a 5 GHz network (the ESP32 needs 2.4 GHz), or out of range", (millis() - w0) / 1000, (int)WiFi.status());
+    }
+  }
+  LOGI("WIFI", "connected to '%s' in %lu ms: my IP %s, router %s, signal %d dBm", WIFI_SSID, millis() - w0, WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
+  LOGI("WIFI", "the Mac must be on this same network: its IP should start like %s", WiFi.localIP().toString().c_str());
+  probeServer();
 #endif
   i2s.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);
   if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
-    Serial.println("I2S init failed");
+    LOGE("I2S", "I2S failed to start (BCLK=%d WS=%d mic SD=%d amp DIN=%d). Set RUN_MODE 4 for the diagnostic", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
     message("I2S failed", "check wiring");
-    while (true) delay(1000);
+    ledSet(LED_ERROR);
+    while (true) { ledUpdate(); delay(20); }
   }
+  LOGI("I2S", "started: %d Hz, 32-bit stereo. Clock BCLK=GPIO%d WS=GPIO%d, mic data in GPIO%d, speaker data out GPIO%d", SAMPLE_RATE, PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
 #if RUN_MODE == 0
   calibrate();
+  LOGI("BOOT", "READY. Say a short sentence close to the microphone. LED: short blip = listening, solid = recording, blinking = thinking");
+  ledSet(LED_IDLE);
 #elif RUN_MODE == 2
-  Serial.println("MIC TEST: talk or clap, the bar should grow.");
+  LOGI("BOOT", "MIC TEST: talk or clap, the bar on the OLED should grow.");
+  ledSet(LED_IDLE);
+#elif RUN_MODE == 3
+  LOGI("BOOT", "SPEAKER TEST: you should hear a beep every 2 seconds.");
+  ledSet(LED_IDLE);
 #else
-  Serial.println("SPEAKER TEST: you should hear a beep every 2 seconds.");
+  runDiagnostics();
 #endif
 #endif
   lastActivity = millis();
@@ -910,10 +1266,11 @@ void setup() {
 void loop() {
   handleSerial();
   animate();
+  ledUpdate();
   static unsigned long lastDraw = 0, lastCycle = 0;
 
 #if RUN_MODE == 1
-  if (millis() - lastCycle &gt; 2500 &amp;&amp; !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); Serial.printf("face: %s\n", EMO_NAMES[emo]); }
+  if (millis() - lastCycle &gt; 2500 &amp;&amp; !mouthDemo) { lastCycle = millis(); setFace((Emotion)((emo + 1) % EMO_COUNT)); LOGI("OLED", "face: %s", EMO_NAMES[emo]); }
   if (mouthDemo) talkAmp = (sin(millis() / 90.0) + 1) / 2;
   drawFace();
   delay(50);
@@ -921,6 +1278,9 @@ void loop() {
   micMeter();
 #elif RUN_MODE == 3
   speakerTest();
+#elif RUN_MODE == 4
+  micMeter();      // keep a live level bar after the report, and keep the dashboard link alive
+  report();
 #else
   size_t n = readMono(frameBuf, FRAME);
   memcpy(preRing[preIdx], frameBuf, FRAME * 2);
@@ -928,6 +1288,7 @@ void loop() {
 
   static int loud = 0;
   lastLevel = rmsOf(frameBuf, n);
+  if (n == 0) LOGE("MIC", "the I2S read returned no audio. The microphone clock is not running (check BCLK GPIO14 / WS GPIO25). Run RUN_MODE 4");
   if (lastLevel &lt; threshold) {                       // follow the room's background noise slowly
     noiseEst = noiseEst * 0.99f + lastLevel * 0.01f;
     threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
@@ -935,14 +1296,25 @@ void loop() {
   if (millis() &lt; quietUntil || !listenOn) loud = 0;
   else if (lastLevel &gt; threshold * 13 / 10) loud++; else loud = 0;
 
+  if (millis() &gt; nextBeat) {
+    nextBeat = millis() + 10000;
+    LOGD("LIVE", "alive: mic level %d (room noise %d, recording starts above %d), memory %u, WiFi %d dBm, listening %s, last answer HTTP %d",
+         lastLevel, (int)noiseEst, threshold * 13 / 10, (unsigned)ESP.getFreeHeap(), WiFi.RSSI(), listenOn ? "yes" : "NO (muted)", lastCode);
+  }
   if (millis() - lastDraw &gt; 100) {
     lastDraw = millis();
     if (holdUntil &amp;&amp; millis() &gt; holdUntil) { holdUntil = 0; setFace(listenOn ? HAPPY : SLEEPY); lastActivity = millis(); }
     if (!holdUntil &amp;&amp; emo != SLEEPY &amp;&amp; millis() - lastActivity &gt; 60000) setFace(SLEEPY);
     drawFace();
   }
+  if (ledMode == LED_ERROR &amp;&amp; millis() - lastActivity &gt; 6000) ledSet(listenOn ? LED_IDLE : LED_MUTED);
   if (loud == 0) report();
-  if (loud &gt;= 3) { loud = 0; conversation(); quietUntil = millis() + (lastCode == 200 ? 1200 : 3500); }
+  if (loud &gt;= 3) {
+    loud = 0;
+    conversation();
+    if (ledMode == LED_THINK || ledMode == LED_REC) ledSet(listenOn ? LED_IDLE : LED_MUTED);
+    quietUntil = millis() + (lastCode == 200 ? 1200 : 3500);
+  }
 #endif
 }
 </template>
@@ -1028,11 +1400,14 @@ Test without hardware: open http://localhost:8000 and type to the bot.
 """
 import asyncio
 import base64
+import collections
 import io
 import json
+import logging
 import os
 import re
 import shutil
+import socket
 import time
 import wave
 
@@ -1058,6 +1433,24 @@ def load_env_file(path: str = os.path.join(os.path.dirname(os.path.abspath(__fil
 
 
 load_env_file()
+
+# ---------- logging ----------
+# Every module logs with its own tag: boot, stt (hearing), llm (brain), tts (voice), net (requests), esp32 (the board).
+# The ESP32 sends its own log lines here too, so the whole system is in one place: this terminal and the dashboard.
+RING = collections.deque(maxlen=400)
+
+
+class RingHandler(logging.Handler):
+    def emit(self, record):
+        RING.append({"t": time.strftime("%H:%M:%S", time.localtime(record.created)), "tag": record.name,
+                     "level": record.levelname, "msg": record.getMessage()})
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)-6s %(message)s", datefmt="%H:%M:%S")
+logging.getLogger().addHandler(RingHandler())
+logging.getLogger("httpx").setLevel(logging.WARNING)   # hide the library's own request lines, our logs say what matters
+log = logging.getLogger("boot")
+log_stt, log_llm, log_tts, log_net, log_esp = (logging.getLogger(n) for n in ("stt", "llm", "tts", "net", "esp32"))
 
 # The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
 # the next one answers, and the built-in offline replies are the last resort.
@@ -1216,7 +1609,7 @@ START_TIME = time.time()
 state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": [], "listen": True, "rec_total": 0, "rec_ignored": 0})   # live data for the dashboard
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
-print(f"Loading speech-to-text model '{WHISPER_MODEL}' (first run downloads it)...")
+log.info("loading the speech-to-text model '%s' (the first run downloads it, please wait)...", WHISPER_MODEL)
 stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
 llm = None
 if "anthropic" in CHAIN:
@@ -1240,9 +1633,38 @@ def available(name: str) -&gt; bool:
 
 
 ACTIVE = [n for n in CHAIN if available(n)]
-print("LLM chain:", " -&gt; ".join(CHAIN), "| ready:", ", ".join(ACTIVE) or "none", "| last resort: offline replies")
+log_llm.info("brain chain: %s | ready (have a key): %s | last resort: built-in replies", " -&gt; ".join(CHAIN), ", ".join(ACTIVE) or "NONE (add keys to .env)")
 if OFFLINE:
-    print("LLM_MODE=offline: the LLM is skipped.")
+    log_llm.warning("LLM_MODE=offline: the brain is skipped, only built-in replies are used")
+def my_ips() -&gt; list:
+    ips = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))   # no data is sent, this only finds which address the Mac uses on the network
+        ips.add(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+    try:
+        ips.update(i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except Exception:
+        pass
+    return sorted(i for i in ips if not i.startswith("127."))
+
+
+def startup_checks():
+    ff = shutil.which("ffmpeg")
+    if ff:
+        log.info("ffmpeg found at %s (needed for the voice)", ff)
+    else:
+        log.error("ffmpeg NOT FOUND: the speaker will be silent. Run:  brew install ffmpeg")
+    ips = my_ips()
+    log.info("this computer's network address: %s", ", ".join(ips) or "unknown")
+    log.info("put that address in SERVER_HOST in ai_bot.ino (it must start with the same numbers as the ESP32's IP)")
+    log.info("voice: %s (loudness x%s) | hearing: %s | dashboard: http://localhost:8000/dashboard", VOICE, TTS_GAIN, WHISPER_MODEL)
+
+
+startup_checks()
 app = FastAPI()
 
 
@@ -1361,9 +1783,9 @@ def call_one(name: str, system: str, messages: list) -&gt; str:
             better = discover_model(name)
         except Exception as e:
             better = None
-            print(f"[{name}] could not list models: {e}")
+            log_llm.warning("[%s] could not list models: %s", name, e)
         if better and better != model:
-            print(f"[{name}] model '{model}' did not work, trying '{better}'")
+            log_llm.warning("[%s] model '%s' did not work, trying '%s'", name, model, better)
             r = post_chat(name, better, system, messages)
             if r.status_code &lt; 400:
                 found_models[name] = better
@@ -1386,7 +1808,7 @@ def call_llm(system: str, messages: list):
             cooldown[name] = time.time() + COOLDOWN_SECONDS
             state["errors"][name] = str(getattr(e, "message", e))[:200]
             errors.append(f"{name}: {getattr(e, 'message', e)}")
-            print(f"[{name}] failed, trying the next one: {getattr(e, 'message', e)}")
+            log_llm.warning("[%s] failed, trying the next one: %s", name, getattr(e, "message", e))
     raise RuntimeError("; ".join(errors) or "no provider available")
 
 
@@ -1416,7 +1838,7 @@ def think(text: str) -&gt; dict:
     try:
         raw, provider = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
     except Exception as e:  # every provider failed: keep talking with built-in replies
-        print("All LLM providers failed, using offline reply:", e)
+        log_llm.error("every brain failed, using a built-in reply: %s", e)
         state["provider"] = "offline"
         reply = finalize_emotion(text, {**offline_reply(text), "provider": "offline"})
         if not state["warned"]:
@@ -1428,7 +1850,7 @@ def think(text: str) -&gt; dict:
     parsed = parse_reply(raw)
     reply = {"emotion": parsed["emotion"].lower(), "text": parsed["text"], "tone": parsed["tone"].lower(), "provider": provider}
     if not reply["text"]:   # the answer was empty or cut off: use a built-in reply for this turn
-        print(f"[{provider}] answer had no usable text ({raw[:100]!r}), using a built-in reply")
+        log_llm.warning("[%s] the answer had no usable text (%r), using a built-in reply", provider, raw[:100])
         off = offline_reply(text)
         reply["text"] = off["text"]
         reply["emotion"] = reply["emotion"] or off["emotion"]
@@ -1448,16 +1870,33 @@ def think(text: str) -&gt; dict:
 
 
 async def speak(text: str) -&gt; bytes:
-    """text -&gt; mp3 (edge-tts) -&gt; raw 16 kHz mono s16le PCM (ffmpeg)."""
+    """text -&gt; mp3 (edge-tts, needs internet) -&gt; raw 16 kHz mono s16le PCM (ffmpeg). Returns b"" if anything fails."""
+    t0 = time.time()
     mp3 = bytearray()
-    async for chunk in edge_tts.Communicate(text, VOICE, rate="+8%", pitch="+25Hz").stream():
-        if chunk["type"] == "audio":
-            mp3 += chunk["data"]
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-    )
-    pcm, _ = await proc.communicate(bytes(mp3))
+    try:
+        async for chunk in edge_tts.Communicate(text, VOICE, rate="+8%", pitch="+25Hz").stream():
+            if chunk["type"] == "audio":
+                mp3 += chunk["data"]
+    except Exception as e:
+        log_tts.error("the voice service failed: %s. edge-tts needs internet (it talks to Microsoft). Check your connection", e)
+        return b""
+    if not mp3:
+        log_tts.error("the voice service returned NO audio for %r. Internet down or blocked?", text[:60])
+        return b""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-af", f"volume={TTS_GAIN},alimiter=limit=0.95", "-f", "s16le",
+            "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        log_tts.error("ffmpeg is NOT installed, so the speaker will be silent. Run:  brew install ffmpeg")
+        return b""
+    pcm, err = await proc.communicate(bytes(mp3))
+    if proc.returncode != 0 or not pcm:
+        log_tts.error("ffmpeg failed (exit code %s): %s", proc.returncode, err.decode(errors="ignore")[:300])
+        return b""
+    log_tts.info("voice ready: %d ms of audio (%d KB) in %d ms, loudness x%s", len(pcm) // 32, len(pcm) // 1024, int((time.time() - t0) * 1000), TTS_GAIN)
     return pcm
 
 
@@ -1470,7 +1909,7 @@ def to_wav(pcm: bytes) -&gt; bytes:
 
 def record(user: str, reply: dict):
     state["log"] = (state["log"] + [{"user": user, "emotion": reply["emotion"], "bot": reply["text"]}])[-30:]
-    print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you ({reply.get('tone', '-')}): {user!r} -&gt; {reply['emotion']}: {reply['text']!r}")
+    log.info("[%s · %s] you (%s): %r -&gt; face %s: %r", MODES[state["mode"]], reply.get("provider", "-"), reply.get("tone", "-"), user, reply["emotion"], reply["text"])
 
 
 def levels(pcm: bytes) -&gt; dict:
@@ -1506,17 +1945,21 @@ async def respond(text: str) -&gt; dict:
 @app.post("/talk")
 async def talk(request: Request):
     pcm = await request.body()
+    who = request.client.host if request.client else "?"
+    log_net.info("/talk from %s: received %d KB of audio (%d ms)", who, len(pcm) // 1024, len(pcm) // 32)
     if len(pcm) &lt; SAMPLE_RATE * 2 * 0.4:  # under 0.4 s: ignore
         state["rec_total"] += 1
         state["rec_ignored"] += 1
+        log_stt.info("ignored: the recording is shorter than 0.4 s")
         return Response(status_code=204)
     t0 = time.time()
     mic = levels(pcm)
     state["rec_total"] += 1
     text = await asyncio.to_thread(transcribe, pcm)
     t1 = time.time()
-    print("heard:", repr(text), f"({mic['ms']} ms, level {mic['rms']}% / peak {mic['peak']}%)")
+    log_stt.info("heard %r from %d ms of audio (mic level %s%% average, %s%% peak) in %d ms", text, mic["ms"], mic["rms"], mic["peak"], int((t1 - t0) * 1000))
     if junk(text):
+        log_stt.info("ignored: no real speech in that recording (heard %r)%s", text, ". The mic level is very low" if mic["peak"] &lt; 3 else "")
         state["rec_ignored"] += 1
         state["turn"] = {"at": time.time(), "source": "esp32", "heard": "", "note": "nothing understood", "mic": mic}
         return Response(status_code=204)
@@ -1524,6 +1967,12 @@ async def talk(request: Request):
     t2 = time.time()
     audio = await speak(reply["text"])
     t3 = time.time()
+    if not audio:
+        log_tts.error("SENDING AN EMPTY VOICE to the ESP32: the speaker will be SILENT. Fix the line above (ffmpeg or the voice service), then try again")
+    else:
+        log_net.info("answering: HTTP 200, %d KB voice, face %s, brain %s, total %.1f s (hearing %d ms, thinking %d ms, voice %d ms)",
+                     len(audio) // 1024, reply["emotion"], reply.get("provider", "-"), t3 - t0,
+                     int((t1 - t0) * 1000), int((t2 - t1) * 1000), int((t3 - t2) * 1000))
     state["turn"] = {"at": time.time(), "source": "esp32", "heard": text, "tone": reply.get("tone", "neutral"),
                      "emotion": reply["emotion"], "provider": reply.get("provider", "-"), "reply": reply["text"],
                      "mic": mic, "speaker": levels(audio),
@@ -1565,6 +2014,9 @@ async def get_state():
     dev = dict(state["device"])
     if dev:
         dev["age"] = round(time.time() - dev.get("seen", 0), 1)
+        if dev["age"] &gt; 8 and state.get("device_online"):
+            state["device_online"] = False
+            log_esp.warning("ESP32 stopped reporting (last seen %.0f s ago). Is it powered, on WiFi, and is SERVER_HOST still right?", dev["age"])
     return {"mode": state["mode"], "modes": MODES, "log": state["log"], "device": dev, "turn": state["turn"],
             "lvl_hist": state["lvl_hist"], "health": health(), "listen": state["listen"],
             "rec_total": state["rec_total"], "rec_ignored": state["rec_ignored"], "emotions": EMOTIONS + ["listening"]}
@@ -1573,6 +2025,9 @@ async def get_state():
 @app.get("/api/device")  # the ESP32 reports here every second or two, and receives commands in the reply
 async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, emo: str = "", heap: int = 0,
                  up: int = 0, vol: int = 0, gain: int = 0):
+    if not state["device"] or time.time() - state["device"].get("seen", 0) &gt; 10:
+        log_esp.info("ESP32 connected from %s (mic level %d, face %s, WiFi %d dBm)", request.client.host if request.client else "?", lvl, emo, rssi)
+        state["device_online"] = True
     state["device"] = {"lvl": lvl, "thr": thr, "rssi": rssi, "emo": emo, "heap": heap, "up": up, "vol": vol, "gain": gain,
                        "ip": request.client.host if request.client else "", "seen": time.time()}
     state["lvl_hist"] = (state["lvl_hist"] + [lvl])[-60:]
@@ -1580,9 +2035,24 @@ async def device(request: Request, lvl: int = 0, thr: int = 0, rssi: int = 0, em
     return PlainTextResponse(f"force={cmd.get('face', '-')} beep={1 if cmd.get('beep') else 0} listen={1 if state['listen'] else 0}\n")
 
 
+@app.post("/api/devlog")  # the ESP32 sends its own log lines here, so they show in this terminal and on the dashboard
+async def devlog(request: Request):
+    text = (await request.body()).decode("utf-8", errors="ignore")
+    for line in text.splitlines():
+        if line.strip():
+            (log_esp.error if " ERR " in line else log_esp.info)(line.strip())
+    return PlainTextResponse("ok\n")
+
+
+@app.get("/api/logs")
+async def get_logs(n: int = 200):
+    return list(RING)[-max(1, min(n, 400)):]
+
+
 @app.post("/api/cmd")  # dashboard buttons: show a face on the real OLED, or beep the real speaker
 async def cmd(request: Request):
     body = await request.json()
+    log_esp.info("dashboard command for the device: %s", body)
     if body.get("face") in EMOTIONS + ["listening"]:
         state["cmd"]["face"] = body["face"]
     if body.get("beep"):
@@ -1670,7 +2140,7 @@ async def dashboard():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
 </template>
     <template id="f-req">fastapi
 uvicorn
@@ -1747,6 +2217,13 @@ canvas.spark{height:46px;width:100%}
   &lt;button class="go" id="stbtn"&gt;Run self-test&lt;/button&gt; &lt;span id="stwait" style="color:var(--muted)"&gt;&lt;/span&gt;
   &lt;div id="stres"&gt;&lt;/div&gt;&lt;audio id="staudio" controls style="width:100%;margin-top:8px;display:none"&gt;&lt;/audio&gt;
  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;div class="card" style="margin-top:14px"&gt;&lt;h2&gt;Live logs (server and ESP32 together)&lt;/h2&gt;
+ &lt;div style="margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"&gt;
+  &lt;label&gt;&lt;input type="checkbox" id="onlyprob"&gt; problems only&lt;/label&gt;&lt;label&gt;&lt;input type="checkbox" id="onlyesp"&gt; ESP32 only&lt;/label&gt;
+  &lt;button id="copylogs"&gt;Copy logs&lt;/button&gt;&lt;span id="copied" style="color:var(--muted);font-size:13px"&gt;&lt;/span&gt;&lt;/div&gt;
+ &lt;pre id="logs" style="margin:0;max-height:360px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--bar);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-word"&gt;&lt;/pre&gt;
 &lt;/div&gt;
 
 &lt;div class="card" style="margin-top:14px"&gt;&lt;h2&gt;All the faces. Click one to show it on the real OLED.&lt;/h2&gt;
@@ -1904,6 +2381,17 @@ function draw(){
 }
 async function poll(){try{S=await (await fetch('/api/state')).json();draw()}catch(e){$('#top').innerHTML=chip('Server not reachable','no')}}
 poll();setInterval(poll,700);
+let LOGS=[];
+function showLogs(){const pre=$('#logs'),stick=pre.scrollTop+pre.clientHeight&gt;=pre.scrollHeight-30;
+  const prob=$('#onlyprob').checked,esp=$('#onlyesp').checked;
+  const rows=LOGS.filter(l=&gt;(!prob||l.level==='ERROR'||l.level==='WARNING'||/ ERR /.test(l.msg))&amp;&amp;(!esp||l.tag==='esp32'));
+  pre.innerHTML=rows.map(l=&gt;{const bad=l.level==='ERROR'||/ ERR /.test(l.msg),warn=l.level==='WARNING';
+    const c=bad?'var(--bad)':warn?'var(--warn)':'inherit';return `&lt;span style="color:${c}"&gt;${l.t} ${(l.tag+'      ').slice(0,6)} ${String(l.msg).replace(/&amp;/g,'&amp;amp;').replace(/&lt;/g,'&amp;lt;')}&lt;/span&gt;`}).join('\n');
+  if(stick)pre.scrollTop=pre.scrollHeight}
+async function pollLogs(){try{LOGS=await (await fetch('/api/logs?n=300')).json();showLogs()}catch(e){}}
+pollLogs();setInterval(pollLogs,1500);$('#onlyprob').onchange=showLogs;$('#onlyesp').onchange=showLogs;
+$('#copylogs').onclick=async()=&gt;{const t=LOGS.map(l=&gt;`${l.t} ${l.tag} ${l.level} ${l.msg}`).join('\n');
+  try{await navigator.clipboard.writeText(t);$('#copied').textContent='copied '+LOGS.length+' lines'}catch(e){$('#copied').textContent='select the text and copy it by hand'}};
 $('#listenbtn').onclick=()=&gt;{post('/api/cmd',{listen:!(S&amp;&amp;S.listen)})};
 $('#beep').onclick=()=&gt;{post('/api/cmd',{beep:true});$('#faceinfo').textContent='beep sent to the device'};
 $('#stopall').onclick=()=&gt;{clearInterval(playTimer);playTimer=null;$('#faceinfo').textContent='stopped'};
@@ -2406,6 +2894,7 @@ const TROUBLE=[
  ['macOS: "Resource busy" or the upload cannot open the port','Close the Serial Monitor and any Terminal running <code>screen</code>, unplug and replug the board, then pick the port again. If the port is missing on an older Mac, install the CP210x or CH340 driver and approve it in System Settings &gt; Privacy &amp; Security.'],
  ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
  ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
+ ['The speaker is silent but the log says HTTP 200','Look for <code>EMPTY voice</code> in the Serial Monitor or the dashboard logs. That means the server made no sound: <code>ffmpeg</code> is missing (run <code>brew install ffmpeg</code>) or the voice service has no internet. The server terminal prints the exact reason in red.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
  ['Speaker crackles, resets the board, or is too loud','Lower <code>SPEAKER_VOLUME</code> (try 150) and <code>TTS_GAIN</code> (try 1.5). A loud speaker on USB power can drop the voltage and restart the ESP32, so use a good USB port or a 5V 2A adapter. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
@@ -2478,7 +2967,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page (put it next to server.py). Open http://localhost:8000/dashboard']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page with live logs (put it next to server.py). Open http://localhost:8000/dashboard']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});

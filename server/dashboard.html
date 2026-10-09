@@ -67,6 +67,13 @@ canvas.spark{height:46px;width:100%}
  </div>
 </div>
 
+<div class="card" style="margin-top:14px"><h2>Live logs (server and ESP32 together)</h2>
+ <div style="margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+  <label><input type="checkbox" id="onlyprob"> problems only</label><label><input type="checkbox" id="onlyesp"> ESP32 only</label>
+  <button id="copylogs">Copy logs</button><span id="copied" style="color:var(--muted);font-size:13px"></span></div>
+ <pre id="logs" style="margin:0;max-height:360px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--bar);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-word"></pre>
+</div>
+
 <div class="card" style="margin-top:14px"><h2>All the faces. Click one to show it on the real OLED.</h2>
  <div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap">
   <button class="go" id="playall">Play all faces on the device</button><button id="stopall">Stop</button><button id="beep">Beep the speaker</button>
@@ -222,6 +229,17 @@ function draw(){
 }
 async function poll(){try{S=await (await fetch('/api/state')).json();draw()}catch(e){$('#top').innerHTML=chip('Server not reachable','no')}}
 poll();setInterval(poll,700);
+let LOGS=[];
+function showLogs(){const pre=$('#logs'),stick=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-30;
+  const prob=$('#onlyprob').checked,esp=$('#onlyesp').checked;
+  const rows=LOGS.filter(l=>(!prob||l.level==='ERROR'||l.level==='WARNING'||/ ERR /.test(l.msg))&&(!esp||l.tag==='esp32'));
+  pre.innerHTML=rows.map(l=>{const bad=l.level==='ERROR'||/ ERR /.test(l.msg),warn=l.level==='WARNING';
+    const c=bad?'var(--bad)':warn?'var(--warn)':'inherit';return `<span style="color:${c}">${l.t} ${(l.tag+'      ').slice(0,6)} ${String(l.msg).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`}).join('\n');
+  if(stick)pre.scrollTop=pre.scrollHeight}
+async function pollLogs(){try{LOGS=await (await fetch('/api/logs?n=300')).json();showLogs()}catch(e){}}
+pollLogs();setInterval(pollLogs,1500);$('#onlyprob').onchange=showLogs;$('#onlyesp').onchange=showLogs;
+$('#copylogs').onclick=async()=>{const t=LOGS.map(l=>`${l.t} ${l.tag} ${l.level} ${l.msg}`).join('\n');
+  try{await navigator.clipboard.writeText(t);$('#copied').textContent='copied '+LOGS.length+' lines'}catch(e){$('#copied').textContent='select the text and copy it by hand'}};
 $('#listenbtn').onclick=()=>{post('/api/cmd',{listen:!(S&&S.listen)})};
 $('#beep').onclick=()=>{post('/api/cmd',{beep:true});$('#faceinfo').textContent='beep sent to the device'};
 $('#stopall').onclick=()=>{clearInterval(playTimer);playTimer=null;$('#faceinfo').textContent='stopped'};

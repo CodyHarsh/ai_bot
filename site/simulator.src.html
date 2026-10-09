@@ -308,6 +308,29 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <div class="hdr"><div><h2>Test run</h2>
     <p class="sub">Use this once the wiring is done. Go in order: each test proves one part, so a failure tells you exactly where to look. Tick a test when it passes.</p></div>
     <div class="card" style="padding:10px 16px"><div class="lbl" style="margin:0">Passed</div><div id="testcount" style="font:700 22px var(--display)">0 / 0</div></div></div>
+    <div class="card" style="margin-bottom:16px">
+      <h2 style="margin-bottom:6px">Something not working? Run the diagnostic first</h2>
+      <p style="margin:0 0 8px">One setting, one report. It checks power, the OLED, WiFi, the server, the microphone and the speaker, and tells you which wire to look at.</p>
+      <ol style="margin:0 0 10px;padding-left:20px">
+        <li>In <code>ai_bot.ino</code> set <code>#define RUN_MODE 4</code>, fill in WiFi and <code>SERVER_HOST</code>, and upload.</li>
+        <li>Open Tools &gt; Serial Monitor at <b>115200</b>. Follow the prompts: <b>stay quiet</b> for 2 seconds, then <b>clap</b> for 4 seconds, then <b>listen</b> for three beeps and type <code>y</code> or <code>n</code> and press Enter.</li>
+        <li>Everything between <code>PIP DIAGNOSTIC REPORT (start)</code> and <code>(END)</code> is the report. Each line says PASS or FAIL, with what to fix. Copy that block when you ask for help.</li>
+      </ol>
+      <p style="margin:0 0 6px"><b>Logs everywhere.</b> Every part writes tagged lines (BOOT, OLED, WIFI, NET, I2S, MIC, VAD, PLAY, CMD, LIVE). The board sends them to the server too, so the dashboard's <b>Live logs</b> panel and the server terminal show the ESP32 and the server in one place. Use "problems only" to see just the errors, and "Copy logs" to send them.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>LED (the small blue LED on the board)</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>fast blinking</td><td>starting up or joining WiFi</td></tr>
+          <tr><td>short blip every 2 seconds</td><td>ready and listening</td></tr>
+          <tr><td>solid on</td><td>hearing you (recording)</td></tr>
+          <tr><td>slow blinking</td><td>thinking (waiting for the server)</td></tr>
+          <tr><td>very fast blinking</td><td>speaking</td></tr>
+          <tr><td>three blinks, pause, repeat</td><td>something is wrong, read the log</td></tr>
+          <tr><td>tiny blip every 3 seconds</td><td>muted</td></tr>
+        </tbody>
+      </table></div>
+      <p style="margin:8px 0 0;color:var(--muted)">No LED blinks? Your board may have no LED on GPIO2. The logs and the report still work.</p>
+    </div>
     <div id="tests"></div>
   </section>
 
@@ -815,6 +838,7 @@ const TROUBLE=[
  ['macOS: "Resource busy" or the upload cannot open the port','Close the Serial Monitor and any Terminal running <code>screen</code>, unplug and replug the board, then pick the port again. If the port is missing on an older Mac, install the CP210x or CH340 driver and approve it in System Settings &gt; Privacy &amp; Security.'],
  ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
  ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
+ ['The speaker is silent but the log says HTTP 200','Look for <code>EMPTY voice</code> in the Serial Monitor or the dashboard logs. That means the server made no sound: <code>ffmpeg</code> is missing (run <code>brew install ffmpeg</code>) or the voice service has no internet. The server terminal prints the exact reason in red.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
  ['Speaker crackles, resets the board, or is too loud','Lower <code>SPEAKER_VOLUME</code> (try 150) and <code>TTS_GAIN</code> (try 1.5). A loud speaker on USB power can drop the voltage and restart the ESP32, so use a good USB port or a 5V 2A adapter. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
@@ -887,7 +911,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page (put it next to server.py). Open http://localhost:8000/dashboard']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page with live logs (put it next to server.py). Open http://localhost:8000/dashboard']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});
