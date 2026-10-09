@@ -40,6 +40,8 @@ const int   SERVER_PORT = 8000;
 #define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test, 4 = DIAGNOSTIC report
 #define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
 #define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
+#define TRIGGER_MODE 2       // how a recording starts: 0 = by voice only, 1 = by the BOOT button only (hold it while you talk), 2 = both. Key 'r' in the Serial Monitor also records 4 s
+#define VOICE_THRESHOLD 0    // 0 = automatic. Or a fixed level (try 4000): the voice must be louder than this to start a recording. Keys '>' and '<' change it live
 #define DEVICE_SPEAKER 0     // 0 = the voice plays on the LAPTOP; the board does not drive the amplifier at all (cleanest microphone). 1 = play on the speaker wired to the board
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
 #define MIC_SHIFT 15         // starting mic gain: lower = louder. 15 = normal (tested: speech peaks at 50-70%), 14 = 2x louder, 13 = 4x (can clip). It adjusts itself if the mic clips or is too quiet
@@ -53,6 +55,7 @@ const int   SERVER_PORT = 8000;
 #define OLED_SDA 21
 #define OLED_SCL 19
 #define OLED_ADDR 0x3C
+#define PIN_BTN 0         // the BOOT button on the board (press = low)
 
 #define SAMPLE_RATE 16000
 #define FRAME 320                 // 20 ms of audio
@@ -382,6 +385,7 @@ int16_t preRing[PRE_FRAMES][FRAME];
 int preIdx = 0;
 int threshold = 400;
 int lastLevel = 0;            // latest microphone level, shown live on the dashboard
+bool manualThr = false;       // true when the threshold was set by hand (VOICE_THRESHOLD or keys > <)
 float noiseEst = 50;          // slowly follows the background noise, so the speech threshold adapts to the room
 bool listenOn = true;         // false = muted (dashboard button, or key 'm' in the Serial Monitor)
 int lastCode = 0;             // HTTP code of the last conversation (200 = answered, 204 = no speech understood)
@@ -419,7 +423,8 @@ void calibrate() {
   }
   noiseEst = noise;
   threshold = max(max(noise * 3, noise + 150), 250);
-  LOGI("MIC", "calibrated: background level %d, gain MIC_SHIFT %d, a recording starts above %d", noise, micShift, threshold * 13 / 10);
+  if (VOICE_THRESHOLD > 0) { threshold = VOICE_THRESHOLD * 10 / 13; manualThr = true; }
+  LOGI("MIC", "calibrated: background level %d, gain MIC_SHIFT %d, a recording starts above %d%s", noise, micShift, threshold * 13 / 10, manualThr ? " (fixed by you)" : "");
   if (noise == 0) LOGE("MIC", "the microphone sends NOTHING (level 0). Check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25, L/R=GND. Run RUN_MODE 4 for the full check");
   else if (noise > 3000) LOGE("MIC", "the background is very loud (%d): loud noise or voices nearby, or interference on the mic wires (keep them short, away from the OLED and speaker wires; add a 100 nF capacitor between mic VDD and GND). Run RUN_MODE 4", noise);
 }
@@ -604,11 +609,26 @@ void receiveAndPlay(WiFiClient& c) {
   ledSet(listenOn ? LED_IDLE : LED_MUTED);
 }
 
+bool startNow = false;        // set by key 'r': record 4 seconds right now
+
+// Median of the last 5 frame levels. Short noise bursts (OLED refresh, WiFi) hit only 1-2 frames and are ignored; speech lasts longer.
+int median5(const int* h) {
+  int a[5]; memcpy(a, h, sizeof(a));
+  for (int i = 1; i < 5; i++) { int v = a[i], j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
+  return a[2];
+}
+
 void conversation() {
   lastActivity = millis();
   setFace(LISTENING); drawFace();
   ledSet(LED_REC); ledUpdate();
-  LOGI("VAD", "speech detected: level %d is above the threshold %d, recording...", lastLevel, threshold);
+  bool byButton = TRIGGER_MODE >= 1 && digitalRead(PIN_BTN) == LOW;
+  bool byKey = startNow; startNow = false;
+  bool manual = byButton || byKey;
+  unsigned long keyEnd = millis() + 4000;
+  if (byButton) LOGI("VAD", "BOOT button pressed: recording while you hold it...");
+  else if (byKey) LOGI("VAD", "key r: recording for 4 seconds...");
+  else LOGI("VAD", "speech detected: level %d is above the threshold %d, recording...", lastLevel, threshold);
   WiFiClient c;
   c.setNoDelay(true);
   unsigned long tc = millis();
@@ -629,9 +649,15 @@ void conversation() {
   int bn = 0, frames = PRE_FRAMES, quiet = 0, peak = threshold, peakAbs = 0;
   unsigned long lastDraw = 0;
   lastCode = 0;
-  while (frames < MAX_FRAMES && quiet < SILENCE_FRAMES) {
+  int lh[5] = {0, 0, 0, 0, 0}, lhi = 0;
+  while (frames < MAX_FRAMES) {
+    if (manual) {
+      if (byButton) { if (digitalRead(PIN_BTN) == HIGH && frames > 20) break; }
+      else if (millis() > keyEnd) break;
+    } else if (quiet >= SILENCE_FRAMES) break;
     size_t n = readMono(frameBuf, FRAME);
-    int lvl = rmsOf(frameBuf, n);
+    lh[lhi] = rmsOf(frameBuf, n); lhi = (lhi + 1) % 5;
+    int lvl = median5(lh);
     peakAbs = max(peakAbs, peakOf(frameBuf, n));
     if (lvl > peak) peak = lvl;
     int endLevel = max(threshold, peak * 3 / 10);   // the end of speech = well below the loudest moment, even in a noisy room
@@ -645,12 +671,12 @@ void conversation() {
   if (bn) sendChunk(c, batch, FRAME * bn);
   c.print("0\r\n\r\n");
   bool hitLimit = frames >= MAX_FRAMES;
-  LOGI("VAD", "recording ended (%s) after %d ms, loudest level %d, sent %d KB of audio", hitLimit ? "TIME LIMIT" : "silence", frames * 20, peak, frames * FRAME * 2 / 1024);
+  LOGI("VAD", "recording ended (%s) after %d ms, loudest level %d, sent %d KB of audio", hitLimit ? "TIME LIMIT" : manual ? "button/key released" : "silence", frames * 20, peak, frames * FRAME * 2 / 1024);
   if (peakAbs >= 32000) {
     LOGE("MIC", "that recording CLIPPED (loudest sample %d of 32767): the gain is too high or it is very loud. Lowering the gain for next time", peakAbs);
     setMicShift(micShift + 1);
   }
-  if (hitLimit) LOGE("VAD", "the recording never went quiet: constant noise or voices nearby (peak %d, quiet line %d). Mute with 'm', or move the mic away. Dashboard shows the live level", peak, max(threshold, peak * 3 / 10));
+  if (hitLimit && !manual) LOGE("VAD", "the recording never went quiet: constant noise or voices nearby (peak %d, quiet line %d). Mute with 'm', or move the mic away. Dashboard shows the live level", peak, max(threshold, peak * 3 / 10));
 
   setFace(THINKING);
   receiveAndPlay(c);
@@ -754,6 +780,8 @@ void handleSerial() {
     else if (ch == 'p') setFace((Emotion)((emo + EMO_COUNT - 1) % EMO_COUNT));
     else if (ch == 'k') { mouthDemo = !mouthDemo; talking = mouthDemo; }
     else if (ch == 'm') { listenOn = !listenOn; setFace(listenOn ? HAPPY : SLEEPY); ledSet(listenOn ? LED_IDLE : LED_MUTED); LOGI("CMD", "%s", listenOn ? "listening: on" : "listening: OFF (muted)"); }
+    else if (ch == 'r') { startNow = true; }
+    else if (ch == '>' || ch == '<') { manualThr = true; threshold = ch == '>' ? threshold * 5 / 4 + 1 : max(100, threshold * 4 / 5); LOGI("MIC", "recording now starts above %d (keys > and < change it; the room is at %d)", threshold * 13 / 10, (int)noiseEst); }
     else if (ch >= '1' && ch <= '4' && RUN_MODE == 0) setServerMode(ch - '1');
     if (ch == 'h' || ch == 'l' || ch == 't' || ch == 'n' || ch == 'p') Serial.printf("face: %s\n", EMO_NAMES[emo]);
   }
@@ -962,6 +990,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   if (PIN_LED >= 0) pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_BTN, INPUT_PULLUP);
   ledSet(LED_BOOT); ledUpdate();
   Wire.begin(OLED_SDA, OLED_SCL);
   Wire.setClock(400000);
@@ -1011,6 +1040,7 @@ void setup() {
 #if RUN_MODE == 0
   autoWire(false);
   calibrate();
+  LOGI("BOOT", "TRIGGER_MODE %d: %s", TRIGGER_MODE, TRIGGER_MODE == 0 ? "voice starts a recording" : TRIGGER_MODE == 1 ? "HOLD the BOOT button while you talk (or press key r)" : "voice starts a recording, or HOLD the BOOT button (or press key r)");
   LOGI("BOOT", "READY. Say a short sentence close to the microphone. LED: short blip = listening, solid = recording, blinking = thinking");
   ledSet(LED_IDLE);
 #elif RUN_MODE == 2
@@ -1052,18 +1082,20 @@ void loop() {
   preIdx = (preIdx + 1) % PRE_FRAMES;
 
   static int loud = 0;
-  lastLevel = rmsOf(frameBuf, n);
+  static int lvh[5] = {0, 0, 0, 0, 0}, lvi = 0;
+  lvh[lvi] = rmsOf(frameBuf, n); lvi = (lvi + 1) % 5;
+  lastLevel = median5(lvh);          // short noise bursts are ignored; speech is not
   if (n == 0) LOGE("MIC", "the I2S read returned no audio. The microphone clock is not running (check BCLK GPIO14 / WS GPIO25). Run RUN_MODE 4");
   if (lastLevel > 3000 && millis() > nextBeat - 5000 && millis() > quietUntil) {   // very loud while idle: say so, now and then
     static unsigned long lastLoudWarn = 0;
     if (millis() - lastLoudWarn > 15000) { lastLoudWarn = millis(); LOGE("MIC", "the mic level is very high (%d) with nobody speaking. Steady noise or voices nearby, or interference on the mic wires. Mute with 'm' if people are talking", lastLevel); }
   }
-  if (lastLevel < threshold) {                       // follow the room's background noise slowly
+  if (!manualThr && lastLevel < threshold) {         // follow the room's background noise slowly
     noiseEst = noiseEst * 0.99f + lastLevel * 0.01f;
     threshold = max((int)(noiseEst * 3), (int)noiseEst + 150);
   }
   if (millis() < quietUntil || !listenOn) loud = 0;
-  else if (lastLevel > threshold * 13 / 10) loud++; else loud = 0;
+  else if (TRIGGER_MODE != 1 && lastLevel > threshold * 13 / 10) loud++; else loud = 0;
 
   if (millis() > nextBeat) {
     nextBeat = millis() + 10000;
@@ -1071,7 +1103,7 @@ void loop() {
          lastLevel, (int)noiseEst, threshold * 13 / 10, (unsigned)ESP.getFreeHeap(), WiFi.RSSI(), listenOn ? "yes" : "NO (muted)", lastCode);
     LOGD("LIVE", "mic gain MIC_SHIFT %d", micShift);
   }
-  if (millis() - lastDraw > 100) {
+  if (millis() - lastDraw > 250) {                   // the OLED refresh can disturb the microphone, so keep it gentle while listening
     lastDraw = millis();
     if (holdUntil && millis() > holdUntil) { holdUntil = 0; setFace(listenOn ? HAPPY : SLEEPY); lastActivity = millis(); }
     if (!holdUntil && emo != SLEEPY && millis() - lastActivity > 60000) setFace(SLEEPY);
@@ -1079,7 +1111,8 @@ void loop() {
   }
   if (ledMode == LED_ERROR && millis() - lastActivity > 6000) ledSet(listenOn ? LED_IDLE : LED_MUTED);
   if (loud == 0) report();
-  if (loud >= 3) {
+  bool pressed = TRIGGER_MODE >= 1 && listenOn && millis() > quietUntil && digitalRead(PIN_BTN) == LOW;
+  if (startNow || pressed || loud >= 3) {
     loud = 0;
     conversation();
     if (ledMode == LED_THINK || ledMode == LED_REC) ledSet(listenOn ? LED_IDLE : LED_MUTED);
