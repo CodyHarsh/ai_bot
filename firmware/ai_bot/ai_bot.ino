@@ -514,6 +514,7 @@ void receiveAndPlay(WiFiClient& c) {
   int code = status.substring(9, 12).toInt();
   long remaining = -1; String emoStr = "happy", text = "", provider = "-", tone = "-";
   bool laptopPlay = false;
+  String heard = "";
   while (true) {
     String l = c.readStringUntil('\n');
     if (l.length() <= 1) break;
@@ -524,9 +525,11 @@ void receiveAndPlay(WiFiClient& c) {
     else if (low.startsWith("x-text:")) { text = l.substring(7); text.trim(); }
     else if (low.startsWith("x-provider:")) { provider = l.substring(11); provider.trim(); }
     else if (low.startsWith("x-tone:")) { tone = l.substring(7); tone.trim(); }
+    else if (low.startsWith("x-heard:")) { heard = l.substring(8); heard.trim(); }
     else if (low.startsWith("x-playback:")) laptopPlay = low.indexOf("laptop") > 0;
   }
   lastCode = code;
+  Serial.printf("\n>>> I HEARD YOU SAY: \"%s\"\n\n", heard.length() ? heard.c_str() : "(nothing understood)");
   LOGI("NET", "server answered HTTP %d after %lu ms: tone=%s face=%s brain=%s", code, waited, tone.c_str(), emoStr.c_str(), provider.c_str());
   if (text.length()) LOGI("NET", "reply: %s", text.c_str());
   if (code == 204) LOGI("NET", "the server understood no speech in that recording (too noisy, too quiet, or nobody spoke)");

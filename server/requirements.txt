@@ -5,3 +5,4 @@ faster-whisper
 edge-tts
 numpy
 httpx
+livekit-agents

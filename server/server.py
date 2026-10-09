@@ -222,8 +222,36 @@ START_TIME = time.time()
 state.update({"device": {}, "turn": {}, "cmd": {}, "errors": {}, "lvl_hist": [], "listen": True, "rec_total": 0, "rec_ignored": 0})   # live data for the dashboard
 OFFLINE = os.getenv("LLM_MODE", "").lower() == "offline"   # set LLM_MODE=offline to skip the LLM completely
 
-log.info("loading the speech-to-text model '%s' (the first run downloads it, please wait)...", WHISPER_MODEL)
-stt = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+# Speech to text: LiveKit (cloud, needs LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET) or local faster-whisper.
+LIVEKIT_READY = all(os.getenv(k) for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"))
+STT_PROVIDER = os.getenv("STT_PROVIDER", "livekit" if LIVEKIT_READY else "whisper").lower()
+LIVEKIT_STT_MODEL = os.getenv("LIVEKIT_STT_MODEL", "deepgram/nova-3")   # any LiveKit Inference speech model
+_whisper = {"model": None}
+lk_stt = None
+if STT_PROVIDER == "livekit":
+    if not LIVEKIT_READY:
+        log.error("STT_PROVIDER=livekit but LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are not all set (put them in server/.env). Using local Whisper instead")
+        STT_PROVIDER = "whisper"
+    else:
+        try:
+            from livekit import rtc as lk_rtc
+            from livekit.agents import inference as lk_inference
+            lk_stt = lk_inference.STT(model=LIVEKIT_STT_MODEL, language="en")
+            log.info("speech-to-text: LiveKit (%s). Local Whisper is only loaded if LiveKit fails", LIVEKIT_STT_MODEL)
+        except Exception as e:
+            log.error("could not start LiveKit speech-to-text (%s). Install it with: pip install livekit-agents. Using local Whisper instead", e)
+            STT_PROVIDER = "whisper"
+
+
+def get_whisper():
+    if _whisper["model"] is None:
+        log.info("loading the local speech-to-text model '%s' (the first run downloads it, please wait)...", WHISPER_MODEL)
+        _whisper["model"] = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    return _whisper["model"]
+
+
+if STT_PROVIDER == "whisper":
+    get_whisper()
 llm = None
 if "anthropic" in CHAIN:
     try:
@@ -274,21 +302,46 @@ def startup_checks():
     ips = my_ips()
     log.info("this computer's network address: %s", ", ".join(ips) or "unknown")
     log.info("put that address in SERVER_HOST in ai_bot.ino (it must start with the same numbers as the ESP32's IP)")
-    log.info("voice: %s (loudness x%s) | hearing: %s | dashboard: http://localhost:8000/dashboard", VOICE, TTS_GAIN, WHISPER_MODEL)
+    log.info("voice: %s (loudness x%s) | hearing: %s | dashboard: http://localhost:8000/dashboard", VOICE, TTS_GAIN, "LiveKit " + LIVEKIT_STT_MODEL if lk_stt is not None else "Whisper " + WHISPER_MODEL)
 
 
 startup_checks()
 app = FastAPI()
 
 
-def transcribe(pcm: bytes) -> str:
+def transcribe_whisper(pcm: bytes) -> str:
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak > 0:
         audio = audio * min(8.0, 0.6 / peak)  # lift quiet mic audio
-    segments, _ = stt.transcribe(audio, language="en", beam_size=1, vad_filter=True,
+    segments, _ = get_whisper().transcribe(audio, language="en", beam_size=1, vad_filter=True,
                                  condition_on_previous_text=False, no_speech_threshold=0.6)
     return " ".join(s.text.strip() for s in segments).strip()
+
+
+def prep_pcm(pcm: bytes) -> bytes:
+    """Lifts quiet mic audio so the recogniser hears it (never past 8x, never clipped)."""
+    a = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    peak = float(np.max(np.abs(a))) if a.size else 0.0
+    if peak > 0:
+        a = np.clip(a * min(8.0, 19000.0 / peak), -32767, 32767)
+    return a.astype(np.int16).tobytes()
+
+
+async def transcribe(pcm: bytes) -> str:
+    """Words from the recording. LiveKit first (if set up), local Whisper as the fallback."""
+    if lk_stt is not None:
+        try:
+            data = prep_pcm(pcm)
+            frame = lk_rtc.AudioFrame(data=data, sample_rate=SAMPLE_RATE, num_channels=1, samples_per_channel=len(data) // 2)
+            ev = await lk_stt.recognize(frame)
+            text = ev.alternatives[0].text.strip() if ev.alternatives else ""
+            state["stt_used"] = "livekit"
+            return text
+        except Exception as e:
+            log_stt.error("LiveKit speech-to-text failed (%s: %s). Falling back to local Whisper for this recording", type(e).__name__, str(e)[:200])
+    state["stt_used"] = "whisper"
+    return await asyncio.to_thread(transcribe_whisper, pcm)
 
 
 FILLERS = {"you", "uh", "um", "hmm", "mm", "mhm", "the", "so", "oh", "ah", "huh", "i"}
@@ -536,7 +589,7 @@ def levels(pcm: bytes) -> dict:
 
 def health() -> dict:
     return {
-        "uptime": int(time.time() - START_TIME), "stt": WHISPER_MODEL, "voice": VOICE, "tts_gain": TTS_GAIN,
+        "uptime": int(time.time() - START_TIME), "stt": ("LiveKit " + LIVEKIT_STT_MODEL) if lk_stt is not None else ("Whisper " + WHISPER_MODEL), "voice": VOICE, "tts_gain": TTS_GAIN,
         "ffmpeg": bool(shutil.which("ffmpeg")), "offline_forced": OFFLINE, "provider": state.get("provider", "-"),
         "chain": [{"name": n, "ready": n in ACTIVE, "cooldown": max(0, int(cooldown.get(n, 0) - time.time())),
                    "error": state["errors"].get(n, ""),
@@ -554,6 +607,10 @@ async def respond(text: str) -> dict:
     record(text, reply)
     return reply
 
+
+
+def ascii_header(s: str) -> str:
+    return (s or "").encode("ascii", "ignore").decode().replace("\n", " ").replace("\r", " ")[:160]
 
 
 _player = {"proc": None}
@@ -623,14 +680,15 @@ async def talk(request: Request):
         log_stt.warning("the recording is a constant loud signal (average %s%%): noise or interference, not speech", mic["rms"])
     elif mic["peak"] < 3:
         log_stt.warning("the microphone is very quiet (peak %s%%): speak closer, or the board will raise its gain", mic["peak"])
-    text = await asyncio.to_thread(transcribe, pcm)
+    text = await transcribe(pcm)
     t1 = time.time()
+    log_stt.info("🎤 I HEARD: \"%s\"  [%s]", text or "(nothing)", state.get("stt_used", "?"))
     log_stt.info("heard %r from %d ms of audio (mic level %s%% average, %s%% peak) in %d ms", text, mic["ms"], mic["rms"], mic["peak"], int((t1 - t0) * 1000))
     if junk(text):
         log_stt.info("ignored: no real speech in that recording (heard %r)%s", text, ". The mic level is very low" if mic["peak"] < 3 else "")
         state["rec_ignored"] += 1
         state["turn"] = {"at": time.time(), "source": "esp32", "heard": "", "note": "nothing understood", "mic": mic}
-        return Response(status_code=204)
+        return Response(status_code=204, headers={"X-Heard": ascii_header(text)})
     reply = await respond(text)
     t2 = time.time()
     audio = await speak(reply["text"])
@@ -648,6 +706,7 @@ async def talk(request: Request):
     if audio and PLAY_ON in ("laptop", "both"):
         await play_on_laptop(audio)
     headers = {
+        "X-Heard": ascii_header(text),
         "X-Playback": "laptop" if PLAY_ON == "laptop" else "device",
         "X-Emotion": reply["emotion"],
         "X-Text": reply["text"].encode("ascii", "ignore").decode()[:200],
@@ -776,7 +835,7 @@ async def selftest():
         add("Voice (text to speech)", lv["ms"] > 500, f"{lv['ms']} ms of audio made in {ms} ms, level {lv['rms']}% (peak {lv['peak']}%)")
         audio_b64 = base64.b64encode(to_wav(pcm)).decode()
         t = time.time()
-        heard = await asyncio.to_thread(transcribe, pcm)
+        heard = await transcribe(pcm)
         add("Hearing (speech to text)", len(heard) > 5, f'heard "{heard}" in {int((time.time() - t) * 1000)} ms')
     except Exception as e:
         add("Voice and hearing", False, str(e)[:200])
