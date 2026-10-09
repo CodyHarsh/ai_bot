@@ -41,7 +41,7 @@ const int   SERVER_PORT = 8000;
 #define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
 #define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
-#define MIC_SHIFT 14         // starting mic gain: lower = louder. 14 = normal, 13 = 2x louder, 12 = 4x (can clip). It adjusts itself if the mic clips or is too quiet
+#define MIC_SHIFT 15         // starting mic gain: lower = louder. 15 = normal (tested: speech peaks at 50-70%), 14 = 2x louder, 13 = 4x (can clip). It adjusts itself if the mic clips or is too quiet
 // ======================================================
 
 // ---------- pins (from your Cirkit circuit) ----------
@@ -344,6 +344,7 @@ int micShift = MIC_SHIFT;     // the gain actually in use (changes by itself, se
 int pinBclk = PIN_I2S_BCLK, pinWs = PIN_I2S_WS, pinDin = PIN_MIC_SD, pinDout = PIN_AMP_DIN;
 int micChannel = 0;           // 0 = left slot (mic L/R pin on GND), 1 = right slot (L/R pin on 3V3)
 // Reads n mono samples (left channel of the 32-bit stereo I2S stream). INMP441 data is in the top 24 bits.
+float hpX = 0, hpY = 0;       // state of the high-pass filter
 size_t readMono(int16_t* out, size_t n) {
   static int32_t tmp[2 * 160];
   size_t done = 0;
@@ -352,8 +353,10 @@ size_t readMono(int16_t* out, size_t n) {
     size_t got = i2s.readBytes((char*)tmp, want * 8) / 8;
     if (!got) break;
     for (size_t i = 0; i < got; i++) {
-      int32_t v = tmp[2 * i + micChannel] >> micShift;
-      out[done + i] = (int16_t)constrain(v, -32768, 32767);
+      float x = (float)(tmp[2 * i + micChannel] >> micShift);
+      float y = x - hpX + 0.94f * hpY;          // high-pass at ~150 Hz: removes the mic's DC offset and low rumble, keeps speech
+      hpX = x; hpY = y;
+      out[done + i] = (int16_t)constrain((int32_t)y, -32768, 32767);
     }
     done += got;
   }
@@ -397,26 +400,27 @@ void setMicShift(int target) {
 void calibrate() {
   message("Listening to the room", "stay quiet...");
   int noise = 0, pk = 0;
-  for (int attempt = 0; attempt < 8; attempt++) {
-    long total = 0; int cnt = 0; pk = 0;
+  for (int attempt = 0; attempt < 6; attempt++) {
+    int lv[32], cnt = 0; pk = 0;
     for (int i = 0; i < 40; i++) {
       size_t n = readMono(frameBuf, FRAME);
-      if (i >= 8) { total += rmsOf(frameBuf, n); cnt++; pk = max(pk, peakOf(frameBuf, n)); }
+      if (i >= 8 && cnt < 32) { lv[cnt++] = rmsOf(frameBuf, n); pk = max(pk, peakOf(frameBuf, n)); }
     }
-    noise = cnt ? total / cnt : 0;
-    LOGD("MIC", "calibration pass %d: background level %d, loudest sample %d, gain MIC_SHIFT %d", attempt + 1, noise, pk, micShift);
-    if ((noise > 3000 || pk >= 32000) && micShift < 18) {   // far too hot for a quiet room: turn the gain down and measure again
-      LOGE("MIC", "the background reads %d (loudest sample %d): that is too hot for the gain, lowering it", noise, pk);
+    for (int i = 1; i < cnt; i++) { int v = lv[i], j = i - 1; while (j >= 0 && lv[j] > v) { lv[j + 1] = lv[j]; j--; } lv[j + 1] = v; }
+    noise = cnt ? lv[cnt / 4] : 0;   // the 25th percentile: ignores short noise bursts (WiFi, OLED) and keeps the true background
+    LOGD("MIC", "calibration pass %d: background level %d (typical), loudest sample %d, gain MIC_SHIFT %d", attempt + 1, noise, pk, micShift);
+    if (pk >= 32000 && noise > 8000 && micShift < 17) {   // really saturating even at the typical level: turn the gain down and measure again
+      LOGE("MIC", "the background reads %d with clipping (loudest sample %d): lowering the gain", noise, pk);
       micShift++;
       continue;
     }
     break;
   }
   noiseEst = noise;
-  threshold = max(noise * 3, noise + 150);
+  threshold = max(max(noise * 3, noise + 150), 250);
   LOGI("MIC", "calibrated: background level %d, gain MIC_SHIFT %d, a recording starts above %d", noise, micShift, threshold * 13 / 10);
   if (noise == 0) LOGE("MIC", "the microphone sends NOTHING (level 0). Check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25, L/R=GND. Run RUN_MODE 4 for the full check");
-  else if (noise > 3000) LOGE("MIC", "the background is STILL very loud (%d) at the lowest gain: loud noise or voices nearby, or interference on the mic wires (keep them short and away from the speaker wires). Run RUN_MODE 4", noise);
+  else if (noise > 3000) LOGE("MIC", "the background is very loud (%d): loud noise or voices nearby, or interference on the mic wires (keep them short, away from the OLED and speaker wires; add a 100 nF capacitor between mic VDD and GND). Run RUN_MODE 4", noise);
 }
 
 void sendChunk(WiFiClient& c, const int16_t* data, size_t samples) {
@@ -798,7 +802,7 @@ bool startI2S(int bclk, int ws, int dout, int din) {
   return i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH);
 }
 
-bool cleanChan(const Chan& c) { long ac = chanAc(c); return chanAlive(c) && ac >= 100 && ac < 60000; }
+bool cleanChan(const Chan& c) { long ac = chanAc(c); return chanAlive(c) && ac >= 100 && ac < 6000000; }
 
 // Looks for a clean microphone signal with the wire combinations people most often get wrong:
 //   1) as in the sketch  2) BCLK and WS swapped  3) mic SD and amp DIN swapped  4) both swapped.
@@ -889,8 +893,8 @@ void runDiagnostics() {
   else if (!lAlive) micHint = "all zeros or constant: check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25 and L/R=GND, and that SD is not swapped with another wire";
   check(lAlive, "microphone sends data", micHint);
   long ac = chanAc(M);
-  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic in a quiet room shows roughly 300 to 20000. Below 100 = the SD wire is floating or disconnected. Above 60000 = loud noise nearby, or interference on the SD/clock wires (keep them short, away from the speaker wires)", ac);
-  check(lAlive && ac > 100 && ac < 60000, "microphone noise level looks like a real microphone", (lAlive && ac > 100 && ac < 60000) ? "" : buf);
+  snprintf(buf, sizeof(buf), "wiggle %ld: a working mic in a quiet room shows roughly 300 to 2000000. Below 100 = the SD wire is floating or disconnected. Above 6000000 = loud noise nearby, or interference on the SD/clock wires (keep them short, away from the speaker wires)", ac);
+  check(lAlive && ac > 100 && ac < 6000000, "microphone noise level looks like a real microphone", (lAlive && ac > 100 && ac < 6000000) ? "" : buf);
   bool stuckHigh = M.n && fabs(M.sum / M.n) > 6000000.0;
   check(!stuckHigh, "microphone data is not stuck at full scale", stuckHigh ? "the SD line is stuck high: wire shorted to 3V3, or the mic has no ground" : "");
 

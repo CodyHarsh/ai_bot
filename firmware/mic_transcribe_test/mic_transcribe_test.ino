@@ -26,7 +26,7 @@
 #define PIN_WS   25                    // mic WS
 #define PIN_DIN  33                    // mic SD
 #define PIN_LED  2
-int micShift = 14;                     // 14 = normal, 13 = 2x louder, 12 = 4x louder. Keys + and - change it.
+int micShift = 15;                     // 14 = normal, 13 = 2x louder, 12 = 4x louder. Keys + and - change it.
 // ---------------------------------------------------------------------------------------------
 
 #define SAMPLE_RATE 16000
