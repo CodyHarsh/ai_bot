@@ -380,7 +380,7 @@ flowchart LR
           <tr><td>curious</td><td>"What is the moon?"</td><td>curious</td></tr>
         </tbody>
       </table></div>
-      <p>It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
+      <p>All 15 faces are used. The model is told to use the whole range. If it just says "happy", the server picks a more specific face from what was said (a greeting gets a wink, a joke gets silly, a fun fact gets surprised, a thank you gets love, a goodnight gets sleepy), and it avoids showing the same cheerful face twice in a row. It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
     </div>
     <div class="card" style="margin-top:16px">
       <h3>Reply format the LLM must follow</h3>

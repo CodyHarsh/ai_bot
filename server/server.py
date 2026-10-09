@@ -129,6 +129,55 @@ def face_for(tone: str, text: str, llm_emotion: str = "") -> str:
     return TONE_TO_EMOTION.get(tone, "happy")
 
 
+# Cues in what was said. Used when the LLM just says "happy", and to keep the faces varied.
+EMOTION_CUES = [  # checked in order, first match wins; the user's words are checked before Pip's own reply
+    ("starry", r"wow|amazing|awesome|incredible|so cool|impressive|fantastic|brilliant|genius"),
+    ("surprised", r"fun fact|did you know|no way|whoa|unbelievable|really\?|surprising"),
+    ("silly", r"joke|funny|haha|lol|silly|prank|pun\b|knock knock"),
+    ("shy", r"you are (so )?(cute|smart|sweet|kind|nice|pretty|clever)|blush|flatter"),
+    ("love", r"love|thank you|thanks|best friend|hug|favou?rite"),
+    ("joy", r"congrat|well done|great job|proud|celebrate|you did it|nice work|hooray|yay"),
+    ("wink", r"hello|hi there|hey|hi pip|good morning|nice to meet|how are you|who are you|your name|secret"),
+    ("sleepy", r"goodnight|good night|bedtime|sleep well|sweet dreams|bye|goodbye|see you"),
+    ("thinking", r"let me think|hmm|good question|explain|how does|how do|why is|why do|what is|what are|because"),
+    ("sad", r"sorry to hear|that sounds hard|i am sorry"),
+    ("curious", r"\?"),
+]
+VARY_POOL = ["wink", "joy", "excited", "starry", "curious", "silly", "shy", "love"]   # rotated when a face would repeat
+REPEATABLE = {"happy", "curious", "thinking", "wink", "joy", "excited", "starry", "silly", "shy", "love"}
+
+
+def cue_emotion(user_text: str, reply_text: str) -> str:
+    for source in (user_text.lower(), reply_text.lower()):
+        for emotion, pattern in EMOTION_CUES:
+            if found(pattern, source):
+                return emotion
+    return ""
+
+
+def vary(emotion: str, tone: str) -> str:
+    """Never show the same cheerful face twice in a row when nothing special is happening."""
+    last = state.get("last_emotion", "")
+    if emotion == last and emotion in REPEATABLE and tone not in NEGATIVE_TONES:
+        for _ in range(len(VARY_POOL)):
+            state["rot"] = (state.get("rot", 0) + 1) % len(VARY_POOL)
+            if VARY_POOL[state["rot"]] != last:
+                return VARY_POOL[state["rot"]]
+    return emotion
+
+
+def finalize_emotion(user_text: str, reply: dict) -> dict:
+    tone = reply.get("tone", "neutral")
+    emotion = reply.get("emotion", "")
+    if emotion in ("", "happy") and tone not in NEGATIVE_TONES:
+        from_tone = TONE_TO_EMOTION.get(tone, "") if tone not in ("neutral", "happy") else ""
+        emotion = cue_emotion(user_text, reply.get("text", "")) or from_tone or emotion or "happy"
+    emotion = face_for(tone, user_text, emotion)      # still never cheerful for someone who is hurting
+    emotion = vary(emotion, tone)
+    state["last_emotion"] = emotion
+    return {**reply, "emotion": emotion}
+
+
 RULES = (
     " You live inside a tiny robot with an OLED face and a speaker, so your words are spoken aloud. "
     "First judge the tone of the user's last message: " + ", ".join(TONES) + ". "
@@ -136,7 +185,12 @@ RULES = (
     "anxious -> shy, tired -> sleepy, excited -> excited, loving -> love, playful -> silly. Never use a cheerful face for someone who is hurting. "
     "Reply with ONLY a JSON object: {\"tone\": \"<one of those tones>\", \"emotion\": \"<one of: " + ", ".join(EMOTIONS) + ">\", "
     "\"text\": \"<what you say>\"}. The text must be 1 or 2 short sentences, under 160 characters, "
-    "plain words with no emojis, no markdown. Comfort first when the user is sad, anxious or angry."
+    "plain words with no emojis, no markdown. Comfort first when the user is sad, anxious or angry. "
+    "Use the WHOLE range of faces and do not default to happy: excited = good news or big plans, joy = celebrating, "
+    "wink = greetings, friendly secrets, playful teasing, silly = jokes and wordplay, surprised = amazing facts, "
+    "starry = something impressive, love = thanks and affection, shy = compliments, curious = when you ask a question back, "
+    "thinking = explaining or a careful answer, sleepy = goodnight and goodbye. Use plain happy only for an ordinary cheerful reply, "
+    "and pick a different face from your last reply when it fits."
 )
 
 state = {"mode": 0, "history": [], "log": [], "warned": False, "provider": "-"}
@@ -203,7 +257,12 @@ OFFLINE_RULES = [
     (r"joke|funny", "silly", "Why did the robot go to school? To improve its byte!"),
     (r"who are you|your name", "wink", "I am Pip, a tiny robot with big feelings."),
     (r"fact", "surprised", "Octopuses have three hearts. Is that not wild?"),
-    (r"hello|hi pip|hey", "happy", "Hi hi! I am so happy you are here!"),
+    (r"how are you", "joy", "I am wonderful now that you are here!"),
+    (r"hello|hi pip|hey|hi there", "wink", "Hi hi! I am so happy you are here!"),
+    (r"you are (so )?(cute|smart|sweet|kind|nice|clever)|cute", "shy", "Oh stop it, you are making me blush!"),
+    (r"wow|amazing|awesome|so cool|incredible", "starry", "Ooh, sparkly! Tell me more!"),
+    (r"bye|goodbye|see you", "sleepy", "Bye bye! Come back soon."),
+    (r"what is|why |how does|how do|explain", "thinking", "Hmm, good question. Let me think about that."),
 ]
 OFFLINE_FALLBACK = [("happy", "Ask me anything. I am all ears!"), ("thinking", "Good question. Let us break it into small parts."),
                     ("love", "Tell me more. I am listening."), ("sleepy", "Mmm. Soft thoughts only now.")]
@@ -302,14 +361,14 @@ def call_llm(system: str, messages: list):
 def think(text: str) -> dict:
     if OFFLINE or not ACTIVE:
         state["provider"] = "offline"
-        return {**offline_reply(text), "provider": "offline"}
+        return finalize_emotion(text, {**offline_reply(text), "provider": "offline"})
     messages = state["history"][-8:] + [{"role": "user", "content": text}]
     try:
         raw, provider = call_llm(MODE_PROMPTS[state["mode"]] + RULES, messages)
     except Exception as e:  # every provider failed: keep talking with built-in replies
         print("All LLM providers failed, using offline reply:", e)
         state["provider"] = "offline"
-        reply = {**offline_reply(text), "provider": "offline"}
+        reply = finalize_emotion(text, {**offline_reply(text), "provider": "offline"})
         if not state["warned"]:
             state["warned"] = True
             reply["text"] = "My smart brain is offline right now, so I will keep it simple. " + reply["text"]
@@ -325,9 +384,10 @@ def think(text: str) -> dict:
     keyword_tone = detect_tone(text)
     if reply["tone"] not in TONES:
         reply["tone"] = keyword_tone
-    elif reply["tone"] == "neutral" and keyword_tone in NEGATIVE_TONES:   # the keyword check caught a hurt the LLM missed
+    elif reply["tone"] == "neutral" and keyword_tone != "neutral":   # the keyword check caught a feeling the LLM missed
         reply["tone"] = keyword_tone
     reply["emotion"] = face_for(reply["tone"], text, reply["emotion"])
+    reply = finalize_emotion(text, reply)
     if not reply["text"]:
         reply["text"] = "Hmm, I got a little lost."
     state["history"] += [{"role": "user", "content": text}, {"role": "assistant", "content": raw}]
