@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pip dashboard</title>
+<style>
+:root{--bg:#f3f5f2;--panel:#fff;--ink:#15201c;--muted:#5a6a63;--line:#d5ddd8;--accent:#d9730d;--good:#1b8a4b;--bad:#c0392b;--warn:#b4540a;--oled:#0a8fb0;--oled-bg:#04100f;--bar:#e3e9e5}
+@media (prefers-color-scheme:dark){:root{--bg:#0c1310;--panel:#131d19;--ink:#e4eee9;--muted:#8fa39a;--line:#26342e;--accent:#ffb347;--good:#4fd18b;--bad:#ff6b5a;--warn:#ffb347;--oled:#79e7ff;--oled-bg:#020807;--bar:#1c2a24;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,sans-serif;padding:16px}
+.wrap{max-width:1100px;margin:auto}h1{font-size:26px;margin:0 0 4px}h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;font-weight:600}
+a{color:var(--accent)}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0}.chip{border:1px solid var(--line);border-radius:999px;padding:3px 12px;font-size:13px;background:var(--panel)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--muted)}.ok .dot{background:var(--good)}.no .dot{background:var(--bad)}.wait .dot{background:var(--warn)}
+.meter{position:relative;height:18px;background:var(--bar);border-radius:4px;overflow:hidden;margin:4px 0 2px}.meter i{position:absolute;left:0;top:0;bottom:0;background:var(--good);width:0;transition:width .15s}.meter u{position:absolute;top:0;bottom:0;width:2px;background:var(--accent)}
+.lab{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}.lab b{color:var(--ink);font-weight:600}
+.hint{font-size:13px;margin-top:6px}.hint.bad{color:var(--bad)}.hint.good{color:var(--good)}.hint.warn{color:var(--warn)}
+.seg{display:flex;height:16px;border-radius:4px;overflow:hidden;background:var(--bar);margin:6px 0}.seg span{height:100%}
+.leg{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+canvas{display:block;width:100%;height:auto;background:var(--oled-bg);border-radius:4px;image-rendering:pixelated}
+.faces{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}.face{border:2px solid var(--line);border-radius:8px;padding:6px;cursor:pointer;background:var(--panel);text-align:center;font-size:12px}
+.face.now{border-color:var(--accent)}.face.last{border-color:var(--good)}
+button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:7px 12px;cursor:pointer}button.go{background:var(--accent);color:#1a1005;border-color:var(--accent)}
+.res{margin:6px 0;font-size:14px}.res b{display:inline-block;width:20px}.res.ok b{color:var(--good)}.res.no b{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px}td{padding:4px 0;border-bottom:1px solid var(--line);vertical-align:top}td:first-child{color:var(--muted);width:42%}
+canvas.spark{height:46px;width:100%}
+</style></head><body><div class="wrap">
+<h1>Pip dashboard</h1>
+<div class="lab"><span>Everything running together. This page refreshes by itself.</span><span><a href="/">Talk to Pip</a></span></div>
+<div class="chips" id="top"></div>
+
+<div class="row">
+ <div class="card"><h2>Microphone level (live from the ESP32)</h2>
+  <div class="lab"><span>level <b id="lvl">-</b></span><span>speech threshold <b id="thr">-</b></span></div>
+  <div class="meter"><i id="lvlbar"></i><u id="thrbar"></u></div>
+  <canvas class="spark" id="spark" width="600" height="92"></canvas>
+  <div class="hint" id="lvlhint"></div>
+  <div class="lab" style="margin-top:8px"><span>mic gain (MIC_SHIFT, adjusts itself) <b id="gain">-</b></span><span>speaker volume <b id="vol">-</b>%</span></div>
+  <div class="lab"><span>recordings sent <b id="rect">-</b></span><span>ignored (no speech) <b id="reci">-</b></span></div>
+  <div style="margin-top:8px"><button id="listenbtn">Listening: on</button> <span style="color:var(--muted);font-size:13px">mute it when other people are talking nearby</span></div>
+  <div class="hint warn" id="rechint"></div>
+ </div>
+ <div class="card"><h2>Last conversation</h2>
+  <table id="turn"><tr><td>Waiting</td><td>Say something to Pip</td></tr></table>
+  <div class="lab" style="margin-top:10px"><span>speed</span><span id="total"></span></div>
+  <div class="seg" id="seg"></div>
+  <div class="leg"><span>■ hearing</span><span>■ thinking</span><span>■ voice</span></div>
+ </div>
+ <div class="card"><h2>Levels in the last turn</h2>
+  <div class="lab"><span>what the mic heard</span><b id="micp">-</b></div><div class="meter"><i id="micbar"></i></div>
+  <div class="lab"><span>what the speaker played</span><b id="spkp">-</b></div><div class="meter"><i id="spkbar"></i></div>
+  <div class="hint" id="levhint"></div>
+ </div>
+</div>
+
+<div class="row">
+ <div class="card"><h2>Face on the OLED right now</h2>
+  <canvas id="nowface" width="640" height="320"></canvas>
+  <div class="lab" style="margin-top:6px"><span>emotion <b id="nowname">-</b></span><span>WiFi signal <b id="rssi">-</b></span></div>
+  <div class="lab"><span>free memory <b id="heap">-</b></span><span>on for <b id="up">-</b></span></div>
+ </div>
+ <div class="card"><h2>Brain chain</h2><div class="chips" id="chain"></div><div id="chainerr" class="hint warn"></div>
+  <h2 style="margin-top:14px">Server</h2><table id="srv"></table>
+ </div>
+ <div class="card"><h2>Self-test</h2>
+  <p style="margin:0 0 8px;color:var(--muted);font-size:13px">Checks ffmpeg, the voice, hearing (it listens to its own voice), the brain and the ESP32.</p>
+  <button class="go" id="stbtn">Run self-test</button> <span id="stwait" style="color:var(--muted)"></span>
+  <div id="stres"></div><audio id="staudio" controls style="width:100%;margin-top:8px;display:none"></audio>
+ </div>
+</div>
+
+<div class="card" style="margin-top:14px"><h2>Live logs (server and ESP32 together)</h2>
+ <div style="margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+  <label><input type="checkbox" id="onlyprob"> problems only</label><label><input type="checkbox" id="onlyesp"> ESP32 only</label>
+  <button id="copylogs">Copy logs</button><span id="copied" style="color:var(--muted);font-size:13px"></span></div>
+ <pre id="logs" style="margin:0;max-height:360px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--bar);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-word"></pre>
+</div>
+
+<div class="card" style="margin-top:14px"><h2>All the faces. Click one to show it on the real OLED.</h2>
+ <div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap">
+  <button class="go" id="playall">Play all faces on the device</button><button id="stopall">Stop</button><button id="beep">Beep the speaker</button>
+  <span id="faceinfo" style="color:var(--muted);align-self:center;font-size:13px"></span></div>
+ <div class="faces" id="faces"></div>
+</div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const EMOS=['happy','excited','love','wink','joy','silly','sleepy','sad','cry','pout','surprised','thinking','listening','shy','starry','curious'];
+/* ---------- OLED renderer: same shapes as the Adafruit_GFX calls in ai_bot.ino ---------- */
+const off=document.createElement('canvas');off.width=128;off.height=64;
+const g=off.getContext('2d',{willReadFrequently:true});
+const W='#fff',K='#000',D2R=Math.PI/180;
+let yo=0,doBlink=false;
+function fc(x,y,r,c=W){g.fillStyle=c;g.beginPath();g.arc(x,y+yo,r,0,7);g.fill()}
+function dc(x,y,r){g.strokeStyle=W;g.lineWidth=1;g.beginPath();g.arc(x,y+yo,r,0,7);g.stroke()}
+function rr(x,y,w,h,r,c=W){g.fillStyle=c;g.beginPath();g.roundRect(x,y+yo,w,h,Math.min(r,h/2,w/2));g.fill()}
+function ln(x0,y0,x1,y1,t=2){g.strokeStyle=W;g.lineWidth=t;g.lineCap='butt';g.beginPath();g.moveTo(x0,y0+yo+t/2);g.lineTo(x1,y1+yo+t/2);g.stroke()}
+function tri(a,b,c2,d,e,f,c=W){g.fillStyle=c;g.beginPath();g.moveTo(a,b+yo);g.lineTo(c2,d+yo);g.lineTo(e,f+yo);g.fill()}
+function arc(cx,cy,r,a0,a1,t){for(let a=a0;a<=a1;a+=3){const x=Math.round(cx+r*Math.cos(a*D2R)),y=Math.round(cy-r*Math.sin(a*D2R));if(t<=1){g.fillStyle=W;g.fillRect(x,y+yo,1,1)}else fc(x,y,t/2)}}
+function gl(cx,cy,r,ir,px,py){
+  if(doBlink){rr(cx-r+2,cy,2*r-4,3,1);return}
+  fc(cx,cy,r);
+  if(ir<8){fc(cx+px,cy+py,ir,K);fc(cx+px-2,cy+py-2,2,W);return}
+  fc(cx+Math.trunc(px/2)-Math.trunc(r/3),cy+Math.trunc(py/2)-Math.trunc(r/3),Math.max(2,Math.trunc(ir/2)-1),K);
+  fc(cx+Math.trunc(px/2)+Math.trunc(r/3),cy+Math.trunc(py/2)+Math.trunc(r/3),1,K);
+}
+function heart(cx,cy,s){fc(cx-s,cy-s/2,s+1);fc(cx+s,cy-s/2,s+1);tri(cx-2*s-1,cy-s/4,cx+2*s+1,cy-s/4,cx,cy+2*s+1)}
+function star(cx,cy,R,r){const p=[];for(let k=0;k<8;k++){const a=(90+45*k)*D2R,rad=k%2?r:R;p.push([cx+rad*Math.cos(a),cy-rad*Math.sin(a)])}
+  for(let k=0;k<8;k++){const n=p[(k+1)%8];tri(cx,cy,p[k][0],p[k][1],n[0],n[1])}}
+function sparkle(x,y,s){ln(x-s,y,x+s,y,1);g.fillStyle=W;g.fillRect(x,y-s+yo,1,2*s+1)}
+function blush(l){if(!l)return;g.fillStyle=W;for(const cx of[15,113])for(let dy=-5;dy<=5;dy++)for(let dx=-9;dx<=9;dx++)
+  if(dx*dx*25+dy*dy*81<=2025){const on=l===1?((dx+dy)&1)===0:(((dx+dy)&1)===0||(dy&1)===0);if(on)g.fillRect(cx+dx,43+dy+yo,1,1)}}
+function mouth(m){switch(m){
+  case 'smile':arc(64,40,9,225,315,2);break;
+  case 'cat':arc(59,45,4,180,360,2);arc(69,45,4,180,360,2);break;
+  case 'D':fc(64,44,9);fc(64,44,7,K);rr(52,34,25,10,0,K);fc(64,50,3);break;
+  case 'frown':arc(64,57,8,45,135,2);break;
+  case 'O':dc(64,50,5);dc(64,50,4);break;
+  case 'smallo':fc(64,50,3);break;
+  case 'wavy':for(let i=0;i<4;i++)ln(55+i*5,i%2?48:51,60+i*5,i%2?51:48,2);break;
+  case 'tongue':arc(64,40,9,225,315,2);fc(68,51,4);g.fillStyle=K;g.fillRect(68,48+yo,1,5);break;
+  case 'wail':rr(56,44,16,10,4);rr(58,46,12,6,2,K);break;
+  case 'puff':arc(64,56,5,50,130,2);break;}}
+function talkMouth(a){const h=3+Math.floor(a*12);rr(54,44,20,h,Math.min(Math.floor(h/2),5));if(h>7){rr(56,46,16,h-4,3,K);fc(64,44+h-4,3)}}
+
+/* st = {emo, blink, lookX, lookY, talking, talkAmp, t(ms)} */
+function drawFace(st){
+  g.fillStyle=K;g.fillRect(0,0,128,64);
+  const emo=st.emo,t=st.t;
+  yo=Math.floor(t/700)%2;
+  const lx=36,rx=92,ey=24,px=st.lookX,py=st.lookY,tw=Math.floor(t/300)%2===1;
+  const closed=['joy','sleepy','cry','silly','love','starry'].includes(emo);
+  doBlink=st.blink&&!closed;
+  let m='smile',bl=0;
+  switch(emo){
+    case'happy':gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);m='cat';bl=1;break;
+    case'excited':gl(lx,ey,14,10,px,py);gl(rx,ey,14,10,px,py);m='D';bl=1;if(tw){sparkle(6,8,3);sparkle(122,8,3)}else{sparkle(10,4,2);sparkle(118,4,2)}break;
+    case'love':heart(lx,ey,tw?6:5);heart(rx,ey,tw?6:5);fc(lx-5,ey-5,1,K);fc(rx-5,ey-5,1,K);m='cat';bl=2;if(tw)heart(114,8,2);break;
+    case'wink':gl(lx,ey,13,10,px,py);arc(rx,ey+4,10,30,150,3);m='smile';bl=1;break;
+    case'joy':arc(lx,ey+5,10,25,155,3);arc(rx,ey+5,10,25,155,3);m='D';bl=2;break;
+    case'silly':ln(lx-8,ey-8,lx+6,ey,3);ln(lx+6,ey,lx-8,ey+8,3);ln(rx+8,ey-8,rx-6,ey,3);ln(rx-6,ey,rx+8,ey+8,3);m='tongue';bl=1;break;
+    case'sleepy':arc(lx,ey-2,10,200,340,3);arc(rx,ey-2,10,200,340,3);g.fillStyle=W;g.font='bold 8px monospace';g.fillText('z',104,12+yo);g.fillText('Z',112,20+yo);fc(64,50,tw?3:2);m=null;bl=1;break;
+    case'sad':{gl(lx,ey+1,13,11,px,-3);gl(rx,ey+1,13,11,px,-3);ln(lx-12,ey-13,lx+8,ey-18,2);ln(rx-8,ey-18,rx+12,ey-13,2);const ty=Math.floor(t/200)%7;fc(lx+10,ey+18+ty,2);tri(lx+8,ey+17+ty,lx+12,ey+17+ty,lx+10,ey+11+ty);m='frown';break}
+    case'cry':{arc(lx,ey,10,200,340,3);arc(rx,ey,10,200,340,3);const h=8+Math.floor(t/100)%14;rr(lx-9,ey+6,3,h,1);rr(rx+6,ey+6,3,h,1);m='wail';bl=1;break}
+    case'pout':gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);tri(lx-14,ey-15,lx+14,ey-15,lx+14,ey-2,K);tri(rx-14,ey-15,rx+14,ey-15,rx-14,ey-2,K);dc(12,44,7);dc(116,44,7);ln(108,4,116,12,2);ln(116,4,108,12,2);m='puff';break;
+    case'surprised':gl(lx,ey,15,6,px,py);gl(rx,ey,15,6,px,py);arc(lx,ey-16,8,60,120,2);arc(rx,ey-16,8,60,120,2);m='O';break;
+    case'thinking':{gl(lx,ey,13,9,5,-4);gl(rx,ey,13,9,5,-4);ln(lx-10,ey-17,lx+8,ey-17,2);ln(rx-10,ey-17,rx+8,ey-21,2);const d=Math.floor(t/400)%4;for(let i=0;i<d;i++)fc(104+i*8,54,2);m='wavy';break}
+    case'listening':{gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);const n=Math.floor(t/250)%4;for(let i=0;i<n;i++)arc(100,24,12+i*5,-40,40,2);m='smallo';bl=1;break}
+    case'shy':gl(lx,ey,13,9,-5,5);gl(rx,ey,13,9,-5,5);m='wavy';bl=2;break;
+    case'starry':star(lx,ey,14,5);star(rx,ey,14,5);if(tw){sparkle(8,10,3);sparkle(120,10,3)}m='D';bl=1;break;
+    case'curious':gl(lx,ey,12,9,px+3,py);gl(rx,ey,15,10,px+3,py);ln(rx-10,ey-19,rx+8,ey-23,2);g.fillStyle=W;g.font='bold 8px monospace';g.fillText('?',116,8+yo);m='cat';bl=1;break;
+  }
+  blush(bl);
+  if(st.talking&&emo!=='sleepy')talkMouth(st.talkAmp);else if(m)mouth(m);
+}
+/* threshold the offscreen canvas into lit OLED pixels on a target canvas */
+function present(cv,scale){
+  const c=cv.getContext('2d'),d=g.getImageData(0,0,128,64).data,cs=getComputedStyle(document.documentElement);
+  c.fillStyle=cs.getPropertyValue('--oled-bg').trim()||'#020807';c.fillRect(0,0,cv.width,cv.height);
+  c.fillStyle=cs.getPropertyValue('--oled').trim()||'#79e7ff';
+  const dot=scale>=4?scale-1:scale-.4;
+  for(let y=0;y<64;y++)for(let x=0;x<128;x++)if(d[(y*128+x)*4]>110)c.fillRect(x*scale,y*scale,dot,dot);
+}
+
+
+/* ---------- dashboard ---------- */
+let S=null,playTimer=null;
+const fmt=n=>n==null?'-':n;
+function up(s){s=s|0;return s>=3600?Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m':s>=60?Math.floor(s/60)+'m '+(s%60)+'s':s+'s'}
+const scale=v=>Math.min(100,100*Math.log10(1+Math.max(0,v))/Math.log10(10000));
+function chip(t,cls){return `<span class="chip ${cls}"><span class="dot"></span>${t}</span>`}
+async function post(url,body){try{await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})}catch(e){}}
+
+const grid=$('#faces'),cards={};
+EMOS.forEach(e=>{const d=document.createElement('div');d.className='face';d.innerHTML=`<canvas width="256" height="128"></canvas>${e}`;
+  d.onclick=()=>{post('/api/cmd',{face:e});$('#faceinfo').textContent='sent "'+e+'" to the device (arrives within about 2 seconds)'};
+  grid.appendChild(d);cards[e]=d});
+function tickFaces(){const t=performance.now();
+  EMOS.forEach(e=>{drawFace({emo:e,blink:false,lookX:0,lookY:0,talking:false,talkAmp:0,t});present(cards[e].querySelector('canvas'),2)});
+  const now=S&&S.device&&S.device.emo||'happy';
+  drawFace({emo:EMOS.includes(now)?now:'happy',blink:Math.floor(t/3500)%2&&(t%3500)<140,lookX:0,lookY:0,talking:false,talkAmp:0,t});present($('#nowface'),5);
+}
+setInterval(tickFaces,300);
+
+function draw(){
+  if(!S)return;const dev=S.device||{},h=S.health,tn=S.turn||{};
+  const online=dev.age!=null&&dev.age<6;
+  $('#top').innerHTML=chip('Server running','ok')+chip(online?'ESP32 online ('+dev.ip+')':'ESP32 not reporting',online?'ok':'no')
+   +chip('Mode: '+S.modes[S.mode],'ok')+chip('Brain: '+(h.provider||'-'),h.provider==='offline'?'wait':'ok')+chip(h.ffmpeg?'ffmpeg ok':'ffmpeg missing',h.ffmpeg?'ok':'no');
+  const lvl=online?dev.lvl:0,thr=dev.thr||0;
+  $('#lvl').textContent=online?lvl:'-';$('#thr').textContent=online?thr:'-';$('#gain').textContent=fmt(dev.gain);$('#vol').textContent=fmt(dev.vol);
+  $('#rect').textContent=S.rec_total;$('#reci').textContent=S.rec_ignored;
+  $('#listenbtn').textContent='Listening: '+(S.listen?'on':'OFF (muted)');$('#listenbtn').className=S.listen?'':'go';
+  $('#rechint').textContent=(S.rec_total>=5&&S.rec_ignored/S.rec_total>0.5)?'Most recordings had no speech. The room is probably noisy or people are talking nearby. Mute while others talk, or move the mic away from voices.':'';
+  $('#lvlbar').style.width=scale(lvl)+'%';$('#thrbar').style.left=scale(thr)+'%';
+  $('#lvlbar').style.background=thr&&lvl>thr?'var(--accent)':'var(--good)';
+  $('#lvlhint').className='hint';$('#lvlhint').textContent='';
+  if(!online){$('#lvlhint').className='hint warn';$('#lvlhint').textContent='No live level yet. Upload the latest ai_bot.ino and make sure the ESP32 is on the same WiFi.'}
+  else if(thr&&lvl>thr){$('#lvlhint').className='hint good';$('#lvlhint').textContent='Speech detected. The bar is orange above the threshold line.'}
+  else $('#lvlhint').textContent='Quiet. Talk or clap: the bar should jump past the orange line.';
+  // sparkline
+  const c=$('#spark'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);
+  const hist=S.lvl_hist||[];x.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--good')||'#1b8a4b';x.lineWidth=2;x.beginPath();
+  hist.forEach((v,i)=>{const px=i/(Math.max(hist.length,2)-1)*c.width,py=c.height-4-scale(v)/100*(c.height-8);i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke();
+  // last turn
+  if(tn.at){
+    const rows=[['Heard',tn.heard||'(nothing understood)'],['Your tone',tn.tone||'-'],['Pip shows',tn.emotion||'-'],['Brain',tn.provider||'-'],['Pip said',tn.reply||'-'],['From',tn.source==='esp32'?'the ESP32 microphone':'the web page']];
+    $('#turn').innerHTML=rows.map(r=>`<tr><td>${r[0]}</td><td>${String(r[1]).replace(/</g,'&lt;')}</td></tr>`).join('');
+    const ms=tn.ms||{},tot=(ms.stt||0)+(ms.llm||0)+(ms.tts||0);
+    $('#total').textContent=tot?(tot/1000).toFixed(1)+' s in total':'';
+    const col=['#4f8ef7','#d9730d','#1b8a4b'];
+    $('#seg').innerHTML=tot?[ms.stt||0,ms.llm||0,ms.tts||0].map((v,i)=>`<span style="width:${v/tot*100}%;background:${col[i]}" title="${v} ms"></span>`).join(''):'';
+    const m=tn.mic,sp=tn.speaker;
+    $('#micp').textContent=m?`${m.rms}% average, ${m.peak}% peak, ${m.ms} ms`:'-';$('#micbar').style.width=m?Math.min(100,m.peak)+'%':'0';
+    $('#spkp').textContent=sp?`${sp.rms}% average, ${sp.peak}% peak, ${sp.ms} ms`:'-';$('#spkbar').style.width=sp?Math.min(100,sp.peak)+'%':'0';
+    let hint='',cls='hint';
+    if(m&&m.ms>=5900){hint='The recording ran to the 6 second limit: background noise kept it going. Mute, or reduce the noise near the mic.';cls='hint warn'}
+    else if(m&&m.peak>=98){hint='The mic is clipping (too loud). The board lowers its gain by itself. If it keeps clipping, there is loud noise or interference near the mic.';cls='hint bad'}
+    else if(m&&m.peak<3){hint='The mic is very quiet. Lower MIC_SHIFT by 1 or speak closer.';cls='hint warn'}
+    else if(sp&&sp.peak>=98){hint='The speaker audio is at the limit. Lower TTS_GAIN or SPEAKER_VOLUME if it crackles.';cls='hint warn'}
+    else if(m||sp){hint='Levels look healthy.';cls='hint good'}
+    $('#levhint').className=cls;$('#levhint').textContent=hint;
+    $('#spkbar').style.background=sp&&sp.peak>=98?'var(--bad)':'var(--good)';$('#micbar').style.background=m&&m.peak>=98?'var(--bad)':'var(--good)';
+  }
+  $('#nowname').textContent=online?(dev.emo||'-'):'device offline';$('#rssi').textContent=online?dev.rssi+' dBm':'-';
+  $('#heap').textContent=online?Math.round(dev.heap/1024)+' KB':'-';$('#up').textContent=online?up(dev.up):'-';
+  Object.keys(cards).forEach(e=>{cards[e].classList.toggle('now',online&&dev.emo===e);cards[e].classList.toggle('last',tn.emotion===e)});
+  $('#chain').innerHTML=h.chain.map(c=>chip(c.name+(c.model?' ('+c.model+')':'')+(c.cooldown?' paused '+c.cooldown+'s':''),!c.ready?'no':c.cooldown?'wait':'ok')).join('');
+  $('#chainerr').textContent=h.chain.filter(c=>c.error).map(c=>c.name+': '+c.error).join('  |  ');
+  $('#srv').innerHTML=[['Speech model',h.stt],['Voice',h.voice],['Voice loudness (TTS_GAIN)',h.tts_gain],['Server up for',up(h.uptime)],['Offline replies forced',h.offline_forced?'yes':'no']].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+}
+async function poll(){try{S=await (await fetch('/api/state')).json();draw()}catch(e){$('#top').innerHTML=chip('Server not reachable','no')}}
+poll();setInterval(poll,700);
+let LOGS=[];
+function showLogs(){const pre=$('#logs'),stick=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-30;
+  const prob=$('#onlyprob').checked,esp=$('#onlyesp').checked;
+  const rows=LOGS.filter(l=>(!prob||l.level==='ERROR'||l.level==='WARNING'||/ ERR /.test(l.msg))&&(!esp||l.tag==='esp32'));
+  pre.innerHTML=rows.map(l=>{const bad=l.level==='ERROR'||/ ERR /.test(l.msg),warn=l.level==='WARNING';
+    const c=bad?'var(--bad)':warn?'var(--warn)':'inherit';return `<span style="color:${c}">${l.t} ${(l.tag+'      ').slice(0,6)} ${String(l.msg).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`}).join('\n');
+  if(stick)pre.scrollTop=pre.scrollHeight}
+async function pollLogs(){try{LOGS=await (await fetch('/api/logs?n=300')).json();showLogs()}catch(e){}}
+pollLogs();setInterval(pollLogs,1500);$('#onlyprob').onchange=showLogs;$('#onlyesp').onchange=showLogs;
+$('#copylogs').onclick=async()=>{const t=LOGS.map(l=>`${l.t} ${l.tag} ${l.level} ${l.msg}`).join('\n');
+  try{await navigator.clipboard.writeText(t);$('#copied').textContent='copied '+LOGS.length+' lines'}catch(e){$('#copied').textContent='select the text and copy it by hand'}};
+$('#listenbtn').onclick=()=>{post('/api/cmd',{listen:!(S&&S.listen)})};
+$('#beep').onclick=()=>{post('/api/cmd',{beep:true});$('#faceinfo').textContent='beep sent to the device'};
+$('#stopall').onclick=()=>{clearInterval(playTimer);playTimer=null;$('#faceinfo').textContent='stopped'};
+$('#playall').onclick=()=>{clearInterval(playTimer);let i=0;const go=()=>{if(i>=EMOS.length){clearInterval(playTimer);$('#faceinfo').textContent='done, all '+EMOS.length+' faces sent';return}
+  post('/api/cmd',{face:EMOS[i]});$('#faceinfo').textContent='showing '+EMOS[i]+' ('+(i+1)+'/'+EMOS.length+')';i++};go();playTimer=setInterval(go,3800)};
+$('#stbtn').onclick=async()=>{$('#stwait').textContent='running, this takes a few seconds...';$('#stres').innerHTML='';
+  try{const r=await (await fetch('/api/selftest',{method:'POST'})).json();
+   $('#stres').innerHTML=r.results.map(x=>`<div class="res ${x.ok?'ok':'no'}"><b>${x.ok?'✓':'✗'}</b>${x.name}: ${String(x.detail).replace(/</g,'&lt;')}</div>`).join('');
+   if(r.audio){const a=$('#staudio');a.src='data:audio/wav;base64,'+r.audio;a.style.display='block';a.play().catch(()=>{})}
+  }catch(e){$('#stres').innerHTML='<div class="res no"><b>✗</b>self-test failed: '+e+'</div>'}$('#stwait').textContent=''};
+</script></body></html>

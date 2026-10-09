@@ -308,6 +308,30 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <div class="hdr"><div><h2>Test run</h2>
     <p class="sub">Use this once the wiring is done. Go in order: each test proves one part, so a failure tells you exactly where to look. Tick a test when it passes.</p></div>
     <div class="card" style="padding:10px 16px"><div class="lbl" style="margin:0">Passed</div><div id="testcount" style="font:700 22px var(--display)">0 / 0</div></div></div>
+    <div class="card" style="margin-bottom:16px">
+      <h2 style="margin-bottom:6px">Something not working? Run the diagnostic first</h2>
+      <p style="margin:0 0 8px">One setting, one report. It checks power, the OLED, WiFi, the server, the microphone and the speaker, and tells you which wire to look at.</p>
+      <ol style="margin:0 0 10px;padding-left:20px">
+        <li>In <code>ai_bot.ino</code> set <code>#define RUN_MODE 4</code>, fill in WiFi and <code>SERVER_HOST</code>, and upload.</li>
+        <li>Open Tools &gt; Serial Monitor at <b>115200</b>. Follow the prompts: <b>stay quiet</b> for 2 seconds, then <b>clap</b> for 4 seconds, then <b>listen</b> for three beeps and type <code>y</code> or <code>n</code> and press Enter.</li>
+        <li>Everything between <code>PIP DIAGNOSTIC REPORT (start)</code> and <code>(END)</code> is the report. Each line says PASS or FAIL, with what to fix. Copy that block when you ask for help.</li>
+      </ol>
+      <p style="margin:0 0 8px"><b>It also finds wiring mistakes by itself.</b> The microphone and amplifier share two wires, BCLK (GPIO14) and WS (GPIO25). If those two are crossed on the real board, the mic gives a constant loud noise and the speaker is silent. At start-up (and in the report) the board tries four combinations: as in the sketch, BCLK and WS swapped, mic SD and amp DIN swapped, and both swapped. It keeps the one that gives a clean microphone signal and says <code>FOUND IT</code> in the log. It also notices if the mic's L/R pin is on 3V3 (the mic then answers on the right slot).</p>
+      <p style="margin:0 0 6px"><b>Logs everywhere.</b> Every part writes tagged lines (BOOT, OLED, WIFI, NET, I2S, MIC, VAD, PLAY, CMD, LIVE). The board sends them to the server too, so the dashboard's <b>Live logs</b> panel and the server terminal show the ESP32 and the server in one place. Use "problems only" to see just the errors, and "Copy logs" to send them.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>LED (the small blue LED on the board)</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>fast blinking</td><td>starting up or joining WiFi</td></tr>
+          <tr><td>short blip every 2 seconds</td><td>ready and listening</td></tr>
+          <tr><td>solid on</td><td>hearing you (recording)</td></tr>
+          <tr><td>slow blinking</td><td>thinking (waiting for the server)</td></tr>
+          <tr><td>very fast blinking</td><td>speaking</td></tr>
+          <tr><td>three blinks, pause, repeat</td><td>something is wrong, read the log</td></tr>
+          <tr><td>tiny blip every 3 seconds</td><td>muted</td></tr>
+        </tbody>
+      </table></div>
+      <p style="margin:8px 0 0;color:var(--muted)">No LED blinks? Your board may have no LED on GPIO2. The logs and the report still work.</p>
+    </div>
     <div id="tests"></div>
   </section>
 
@@ -322,8 +346,11 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <template id="f-main">__F_MAIN__</template>
     <template id="f-mic">__F_MIC__</template>
     <template id="f-spk">__F_SPK__</template>
+    <template id="f-spv">__F_SPV__</template>
+    <template id="f-mtt">__F_MTT__</template>
     <template id="f-server">__F_SERVER__</template>
     <template id="f-req">__F_REQ__</template>
+    <template id="f-dash">__F_DASH__</template>
   </section>
 
   <!-- LLM -->
@@ -365,18 +392,91 @@ flowchart LR
       </div>
     </div>
     <div class="card" style="margin-top:16px">
+      <h3>Pip reads your tone and shows it on its face</h3>
+      <p>Before answering, the server judges how you sound. The LLM does this, and a quick keyword check backs it up, so it works even when no LLM is reachable. Pip then shows a face that matches your feeling. If the LLM picks a cheerful face for someone who is hurting, the server corrects it.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>You sound</th><th>Example</th><th>Pip's face</th></tr></thead>
+        <tbody>
+          <tr><td>sad or lonely</td><td>"I had a rough day"</td><td>sad (cry if very upset)</td></tr>
+          <tr><td>angry</td><td>"My brother is so annoying"</td><td>pout</td></tr>
+          <tr><td>anxious</td><td>"I am worried about my exam"</td><td>shy</td></tr>
+          <tr><td>tired</td><td>"I am so tired"</td><td>sleepy</td></tr>
+          <tr><td>excited</td><td>"I got the job!"</td><td>excited</td></tr>
+          <tr><td>loving</td><td>"I love you Pip"</td><td>love</td></tr>
+          <tr><td>playful</td><td>"Tell me a joke"</td><td>silly</td></tr>
+          <tr><td>curious</td><td>"What is the moon?"</td><td>curious</td></tr>
+        </tbody>
+      </table></div>
+      <p>All 15 faces are used. The model is told to use the whole range. If it just says "happy", the server picks a more specific face from what was said (a greeting gets a wink, a joke gets silly, a fun fact gets surprised, a thank you gets love, a goodnight gets sleepy), and it avoids showing the same cheerful face twice in a row. It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
       <h3>Reply format the LLM must follow</h3>
-      <pre class="code">{"emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
+      <pre class="code">{"tone": "sad|lonely|angry|anxious|tired|excited|loving|playful|happy|curious|neutral",
+ "emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
  "text": "1 or 2 short sentences, under 160 characters"}</pre>
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
-      <h3>Costs and swaps</h3>
-      <ul>
-        <li>Whisper and edge-tts are free. The only paid piece is the Claude API, a few cents for a whole demo with Haiku.</li>
-        <li>No internet at the venue? Use a phone hotspot for both the laptop and the ESP32.</li>
-        <li>Want another LLM? Only the <code>think()</code> function in <code>server.py</code> changes.</li>
-      </ul>
+      <h3>The brain chain: Groq first, then ChatGPT, then Gemini</h3>
+      <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
+      <pre class="mermaid">
+flowchart LR
+  A[Groq<br/>main, free] -->|fails| B[OpenAI<br/>ChatGPT] -->|fails| C[Gemini<br/>free] -->|fails| E[Built-in replies]
+      </pre>
+      <div class="scroll"><table>
+        <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal or .env</th></tr></thead>
+        <tbody>
+          <tr><td><b>Groq</b> (main)</td><td>Free key at console.groq.com</td><td><code>GROQ_API_KEY=...</code></td></tr>
+          <tr><td><b>OpenAI</b> (ChatGPT)</td><td>Key at platform.openai.com, needs credit</td><td><code>OPENAI_API_KEY=...</code></td></tr>
+          <tr><td><b>Gemini</b></td><td>Free key at aistudio.google.com</td><td><code>GEMINI_API_KEY=...</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. <b>The voice is always the same</b> (the cute edge-tts voice), whichever brain wrote the reply. Keep keys in a <code>.env</code> file: copy <code>.env.example</code> to <code>.env</code> in the server folder and fill it in. It is ignored by git.</p>
+      <p>Want more brains? Add them to the order, for example <code>export LLM_CHAIN=groq,openai,gemini,ollama,anthropic</code>. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Pip reads your tone and shows it on its face</h3>
+      <p>Before answering, the server judges how you sound. The LLM does this, and a quick keyword check backs it up, so it works even when no LLM is reachable. Pip then shows a face that matches your feeling. If the LLM picks a cheerful face for someone who is hurting, the server corrects it.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>You sound</th><th>Example</th><th>Pip's face</th></tr></thead>
+        <tbody>
+          <tr><td>sad or lonely</td><td>"I had a rough day"</td><td>sad (cry if very upset)</td></tr>
+          <tr><td>angry</td><td>"My brother is so annoying"</td><td>pout</td></tr>
+          <tr><td>anxious</td><td>"I am worried about my exam"</td><td>shy</td></tr>
+          <tr><td>tired</td><td>"I am so tired"</td><td>sleepy</td></tr>
+          <tr><td>excited</td><td>"I got the job!"</td><td>excited</td></tr>
+          <tr><td>loving</td><td>"I love you Pip"</td><td>love</td></tr>
+          <tr><td>playful</td><td>"Tell me a joke"</td><td>silly</td></tr>
+          <tr><td>curious</td><td>"What is the moon?"</td><td>curious</td></tr>
+        </tbody>
+      </table></div>
+      <p>It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Reply format the LLM must follow</h3>
+      <pre class="code">{"tone": "sad|lonely|angry|anxious|tired|excited|loving|playful|happy|curious|neutral",
+ "emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
+ "text": "1 or 2 short sentences, under 160 characters"}</pre>
+      <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>The brain chain: Gemini first, OpenAI last</h3>
+      <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
+      <pre class="mermaid">
+flowchart LR
+  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| F[OpenAI<br/>paid, last] -->|fails| E[Built-in replies]
+      </pre>
+      <div class="scroll"><table>
+        <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal</th></tr></thead>
+        <tbody>
+          <tr><td><b>Gemini</b> (first)</td><td>Free key at aistudio.google.com</td><td><code>export GEMINI_API_KEY=...</code></td></tr>
+          <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export GROQ_API_KEY=...</code></td></tr>
+          <tr><td><b>Ollama</b></td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td>No key. Keep the Ollama app running</td></tr>
+          <tr><td><b>Claude</b></td><td>Needs paid credit</td><td><code>export ANTHROPIC_API_KEY=...</code></td></tr>
+          <tr><td><b>OpenAI</b> (last)</td><td>Key at platform.openai.com, needs credit</td><td><code>export OPENAI_API_KEY=...</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. <b>The voice is always the same</b> (the cute edge-tts voice), whichever brain wrote the reply. Prefer a file to typing <code>export</code>? Copy <code>.env.example</code> to <code>.env</code> in the server folder, fill in your keys, and the server reads it. It is ignored by git. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
     </div>
   </section>
 </div>
@@ -533,12 +633,30 @@ const RULES=[
   [/hello|hi pip|hey/,'happy','Hi hi! I am so happy you are here!']
 ];
 const FALLBACK=[['happy','Ask me anything. I am all ears!'],['thinking','Good question. Let us break it into small parts.'],['love','Tell me more. I am listening.'],['sleepy','Mmm. Soft thoughts only now.']];
+const TONE_PATTERNS=[
+ ['sad',/sad|unhappy|depress|down today|crying|cry|hurt|heartbroken|miss (him|her|them)|bad day|rough day|worst day|terrible|awful|upset|disappoint|failed|failure|grief|not okay|not ok/g],
+ ['lonely',/lonely|alone|nobody|no one (cares|likes|understands)|no friends/g],
+ ['angry',/angry|mad at|furious|annoyed|annoying|hate|irritated|fed up|so unfair|sick of/g],
+ ['anxious',/anxious|worried|worry|nervous|scared|afraid|stress|panic|overwhelmed|cannot sleep|can't sleep|exam tomorrow/g],
+ ['tired',/tired|sleepy|exhausted|bedtime|goodnight|good night|yawn|so sleepy/g],
+ ['excited',/excited|amazing|awesome|got the job|i passed|i won|promotion|yay|can't wait|best day|celebrate|great news|good news/g],
+ ['loving',/love you|miss you|best friend|you are the best|appreciate you|thank you so much/g],
+ ['playful',/joke|funny|lol|haha|silly|prank/g],
+ ['happy',/happy|great|good morning|wonderful|glad|thanks|thank you|nice/g],
+ ['curious',/what is|what's|why |how do|how does|who is|tell me|explain|\?/g]];
+const TONE_FACE={sad:'sad',lonely:'sad',angry:'pout',anxious:'shy',tired:'sleepy',excited:'excited',loving:'love',playful:'silly',happy:'happy',curious:'curious',neutral:'happy'};
+const NEGATIVE=['sad','lonely','angry','anxious'],CHEERFUL=['happy','excited','wink','joy','silly','starry','love'];
+function found(re,t){re.lastIndex=0;let m;while((m=re.exec(t))){if(!/(not|never|no|n't) $/.test(t.slice(Math.max(0,m.index-6),m.index)))return true}return false}
+function detectTone(q){const t=q.toLowerCase();for(const [tone,re] of TONE_PATTERNS)if(found(re,t))return tone;return (t.match(/!/g)||[]).length>=2?'excited':'neutral'}
+function faceFor(tone,q,e){if(tone==='sad'&&/crying|heartbroken|devastated|breaking down|want to cry|i cried/.test(q.toLowerCase()))return 'cry';
+  if(EMOS.includes(e)&&!(NEGATIVE.includes(tone)&&CHEERFUL.includes(e)))return e;return TONE_FACE[tone]||'happy'}
 function brain(q){
   const s=q.toLowerCase();
   const mm=s.match(/\b(buddy|study|mood|sleep) mode\b/);
-  if(mm){S.mode=['buddy','study','mood','sleep'].indexOf(mm[1]);refreshUI();return{emotion:'excited',text:'Okay! '+MODES[S.mode]+' mode on.'}}
-  for(const [re,e,t] of RULES)if(re.test(s))return{emotion:e,text:t};
-  const f=FALLBACK[S.mode];return{emotion:f[0],text:f[1]};
+  if(mm){S.mode=['buddy','study','mood','sleep'].indexOf(mm[1]);refreshUI();return{emotion:'excited',text:'Okay! '+MODES[S.mode]+' mode on.',tone:'neutral'}}
+  const tone=detectTone(q);
+  for(const [re,e,t] of RULES)if(found(new RegExp(re.source,'g'),s))return{emotion:faceFor(tone,q,e),text:t,tone};
+  const f=FALLBACK[S.mode];return{emotion:tone==='neutral'?f[0]:faceFor(tone,q),text:f[1],tone};
 }
 
 /* ---------- the full talk path ---------- */
@@ -558,7 +676,8 @@ async function converse(text){
   stage('llm',true);const r=brain(text);await sleep(900);stage('llm',false);log(JSON.stringify(r),'t');
   stage('tts',true);await sleep(700);stage('tts',false);
   stage('down',true);await sleep(300);stage('down',false);
-  log('HTTP 200  X-Emotion: '+r.emotion,'ok');
+  log('You sounded '+(r.tone||'neutral')+'. Pip shows '+r.emotion,'ok');
+  log('HTTP 200  X-Tone: '+(r.tone||'neutral')+'  X-Emotion: '+r.emotion,'ok');
   const dur=Math.max(1200,r.text.length*62);
   S.emo=r.emotion;S.talking=true;waveMode='spk';$('#ledspk').classList.add('on');stage('amp',true);stage('oled',true);
   log('playing reply: "'+r.text+'"','ok');
@@ -653,19 +772,19 @@ const PHASES=[
  {t:'Phase 2 · OLED face',s:'about 10 min',items:[
   ['Wire the OLED only','VDD to 3V3, GND to GND, SCK to GPIO19, SDA to GPIO21. Unplug USB while wiring.'],
   ['Open the main firmware','Code tab &gt; "ai_bot.ino" &gt; Copy. In Arduino IDE, File &gt; New Sketch, select all, paste, save as <code>ai_bot</code>.'],
-  ['Turn on face-test mode','Near the top change <code>#define FACE_TEST_ONLY 0</code> to <code>1</code>. This skips WiFi and audio.'],
+  ['Turn on face-test mode','Near the top change <code>#define RUN_MODE 0</code> to <code>1</code>. This skips WiFi and audio. (One file does everything: 0 full bot, 1 face test, 2 mic test, 3 speaker test.)'],
   ['Upload','Click Upload. The OLED should show a star-eyed face, then cycle through all 16 emotions every 2.5 seconds.'],
   ['Try the serial keys','Tools &gt; Serial Monitor, 115200 baud. Press <code>n</code> next face, <code>p</code> previous, <code>k</code> talking mouth, then Enter.'],
   ['Screen stays black?','Swap SDA and SCL, check 3V3 and GND, and make sure the OLED address is 0x3C (the sketch uses <code>OLED_ADDR</code>).']]},
  {t:'Phase 3 · Microphone',s:'about 10 min',items:[
   ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
-  ['Open the mic test','Code tab &gt; "test_mic.ino". Paste into a new sketch and upload.'],
+  ['Switch to the mic test','Set <code>#define RUN_MODE 2</code> in <code>ai_bot.ino</code> and upload. The OLED also shows a level bar. (The separate <code>test_mic.ino</code> still works too.)'],
   ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
-  ['Too quiet or too loud?','Later you can change <code>MIC_SHIFT</code> in the main firmware: 13 is louder, 15 is quieter.']]},
+  ['Too quiet or too loud?','<code>MIC_SHIFT</code> starts at 14 and then adjusts itself: it lowers the gain if the mic clips (a recording peaking at 100% is too hot) and raises it a little if your voice was quiet. To start somewhere else, 13 is twice as sensitive, 15 is quieter. Watch the level on the dashboard.']]},
  {t:'Phase 4 · Speaker',s:'about 10 min',items:[
   ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
   ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
-  ['Open the speaker test','Code tab &gt; "test_speaker.ino". Paste into a new sketch and upload.'],
+  ['Switch to the speaker test','Set <code>#define RUN_MODE 3</code> in <code>ai_bot.ino</code> and upload. For a test that SPEAKS a sentence, open <code>speaker_voice_test.ino</code> (Code tab): beeps, then "Hello! I am Pip. Can you hear me?". Press 4 in the Serial Monitor to test swapped BCLK/LRC wires.'],
   ['Listen','You should hear a soft beep-boop every 2 seconds. If nothing: check 5V and the DIN wire. If it is distorted, lower <code>VOLUME</code>.']]},
  {t:'Phase 5 · The brain on your laptop',s:'about 20 min',items:[
   ['macOS: install Homebrew (skip if you have it)','Open Terminal and run the install command from brew.sh.'],
@@ -682,13 +801,13 @@ const PHASES=[
   ['Find your Mac IP','<pre>ipconfig getifaddr en0</pre>If that prints nothing, try <code>en1</code>. This is your <code>SERVER_HOST</code>. Windows: <code>ipconfig</code>. Linux: <code>ip a</code>.'],
   ['Check the ESP32 can reach it','On your phone (same WiFi) open <code>http://YOUR-MAC-IP:8000</code>. If the Pip page loads, the ESP32 will connect too.']]},
  {t:'Phase 6 · Put it all together',s:'about 15 min',items:[
-  ['Turn face-test mode off','In <code>ai_bot.ino</code> set <code>#define FACE_TEST_ONLY 0</code>.'],
+  ['Switch to the full bot','In <code>ai_bot.ino</code> set <code>#define RUN_MODE 0</code>.'],
   ['Fill in the config','Set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> (2.4 GHz only) and <code>SERVER_HOST</code> (your laptop IP from phase 5).'],
   ['Upload the firmware','Click Upload. Open Tools &gt; Serial Monitor and set the speed to <b>115200</b>. If upload hangs on Connecting, hold BOOT.'],
   ['Watch the boot','You should see the ESP32 IP, then "Noise floor ... speech threshold ...". Stay quiet during the 1 second calibration.'],
   ['Say hello','Speak a short sentence. The face turns to listening, then thinking, then the speaker answers and the face matches the reply.'],
   ['Switch modes','Say "study mode", "mood mode", "sleep mode" or "buddy mode". Or press 1 to 4 in the Serial Monitor.'],
-  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Too loud speaker: lower <code>SPEAKER_VOLUME</code>. Picks up noise: stay closer to the mic.']]},
+  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Speaker too quiet or too loud: change <code>SPEAKER_VOLUME</code> (default 200, 300 is louder, 100 is normal) and <code>TTS_GAIN</code> on the server (default 2.0). Picks up noise: stay closer to the mic.']]},
  {t:'Phase 7 · Demo day',s:'last',items:[
   ['Use a phone hotspot','Connect both your Mac and the ESP32 to it. Update <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> once.'],
   ['Pre-test your lines','Run your 5 demo questions twice so the speech model is warm.'],
@@ -715,15 +834,16 @@ let saved={};try{saved=JSON.parse(localStorage.getItem('pipSteps2')||'{}')}catch
 const TROUBLE=[
  ['Upload fails: "Failed to connect to ESP32"','Hold the BOOT button while the IDE says "Connecting...", release when it starts writing. Try another USB cable.'],
  ['Compile error: ESP_I2S.h not found','You have ESP32 core 2.x. Update "esp32 by Espressif Systems" to 3.x in Boards Manager.'],
- ['Serial shows "Cannot reach server"','Wrong <code>SERVER_HOST</code>, laptop on a different WiFi, server not running, or the firewall blocks port 8000. Test from your phone: <code>http://LAPTOP-IP:8000</code>.'],
+ ['Serial shows "Cannot reach server"','The board joined WiFi but could not open a connection to your Mac on port 8000. Check in order: (1) the server is running; (2) <code>SERVER_HOST</code> is your Mac\'s <b>current</b> IP from <code>ipconfig getifaddr en0</code>, because it changes when you switch WiFi or hotspot; (3) the Mac and the ESP32 are on the <b>same</b> WiFi, and the first three numbers of the ESP32 IP and the Mac IP match; (4) <code>curl http://MAC-IP:8000/api/state</code> works on the Mac itself; (5) your phone on the same WiFi can open <code>http://MAC-IP:8000</code>; (6) macOS firewall allows Python and Terminal under Local Network; (7) the network does not block devices from each other (guest, school or office WiFi), so use a phone hotspot.'],
  ['It never wakes up when I talk','Open the mic test and watch the level. Lower <code>MIC_SHIFT</code> by 1 or 2. Restart the ESP32 and stay quiet during calibration.'],
  ['It wakes up all the time','Raise <code>MIC_SHIFT</code> by 1, move away from fans and loud speakers, restart for a fresh calibration.'],
  ['Server says heard: \'\' (empty)','The audio was too quiet or too short. Speak closer, or lower <code>MIC_SHIFT</code>. Try <code>WHISPER_MODEL=small.en</code>.'],
  ['macOS: "Resource busy" or the upload cannot open the port','Close the Serial Monitor and any Terminal running <code>screen</code>, unplug and replug the board, then pick the port again. If the port is missing on an older Mac, install the CP210x or CH340 driver and approve it in System Settings &gt; Privacy &amp; Security.'],
  ['macOS: the ESP32 cannot reach the server although the page works on my phone','Your Mac may have gone to sleep or the firewall asked a question you dismissed. Run the server with <code>caffeinate -i python server.py</code> so the Mac stays awake, and open System Settings &gt; Network &gt; Firewall to allow Python. On recent macOS also check System Settings &gt; Privacy &amp; Security &gt; Local Network and allow Terminal.'],
  ['Hotspot or hotel WiFi blocks the ESP32 from the Mac','Some networks isolate devices from each other (client isolation). Use your phone hotspot and join both the Mac and the ESP32 to it.'],
+ ['The speaker is silent but the log says HTTP 200','Look for <code>EMPTY voice</code> in the Serial Monitor or the dashboard logs. That means the server made no sound: <code>ffmpeg</code> is missing (run <code>brew install ffmpeg</code>) or the voice service has no internet. The server terminal prints the exact reason in red.'],
  ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
- ['Speaker crackles or is too loud','Lower <code>SPEAKER_VOLUME</code>. Make sure the speaker is wired to VO+ and VO−, not GND.'],
+ ['Speaker crackles, resets the board, or is too loud','Lower <code>SPEAKER_VOLUME</code> (try 150) and <code>TTS_GAIN</code> (try 1.5). A loud speaker on USB power can drop the voltage and restart the ESP32, so use a good USB port or a 5V 2A adapter. Make sure the speaker is wired to VO+ and VO−, not GND.'],
  ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
 ];
 $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${t[1]}</p></details>`).join('');
@@ -732,33 +852,37 @@ $('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${
 /* ---------- test run ---------- */
 const TESTS=[
  {n:'0 · Before you plug anything in',tag:'code only, no wiring',
-  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code>, <code>test_mic.ino</code> and <code>test_speaker.ino</code>.','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
+  d:['Arduino IDE: select ESP32 Dev Module, then click the ✓ <b>Verify</b> button on <code>ai_bot.ino</code> (it contains all the tests).','In <code>ai_bot.ino</code> set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> (your Mac IP from <code>ipconfig getifaddr en0</code>).','Terminal: <code>caffeinate -i python server.py</code> from the server folder, with <code>ANTHROPIC_API_KEY</code> set.'],
   e:['Each sketch ends with "Done compiling".','The server prints "Loading speech-to-text model" and then keeps running.','<code>http://localhost:8000</code> loads and answers when you type "hello".'],
   f:['Compile error: copy the red text. <code>ESP_I2S.h</code> missing means the core is not 3.x.','No sound from the server page: check the Mac volume, and that <code>ffmpeg -version</code> works.']},
  {n:'1 · Board and upload',tag:'USB only',
-  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>FACE_TEST_ONLY</code> to <code>1</code>, click Upload.'],
+  d:['Plug the ESP32 into the Mac with a data USB cable.','Tools &gt; Port: pick the <code>/dev/cu.…</code> entry. Close any Serial Monitor.','Open <code>ai_bot.ino</code>, set <code>RUN_MODE</code> to <code>1</code>, click Upload.'],
   e:['"Hard resetting via RTS pin… Done uploading." appears.'],
   f:['Stuck on "Connecting...": hold the <b>BOOT</b> button until it starts writing.','No port: try another cable, install the CP210x or CH340 driver, replug.','"Resource busy": close the Serial Monitor and any second Arduino window.']},
  {n:'2 · OLED faces',tag:'face test mode',
   d:['Open Tools &gt; Serial Monitor at <b>115200</b>.','Press <code>n</code> then Enter a few times. Press <code>k</code> then Enter for the talking mouth.'],
   e:['A star-eyed face first, then a new emotion every 2.5 seconds.','The face blinks, bobs slightly, and the mouth moves after <code>k</code>.','Serial prints <code>face: happy</code>, <code>face: excited</code> and so on.'],
   f:['Black screen: swap SDA and SCL, recheck 3V3 and GND.','Serial says "OLED init failed": the address may be 0x3C or 0x3D, and the wires may be loose.']},
- {n:'3 · Microphone',tag:'test_mic.ino',
-  d:['Upload <code>test_mic.ino</code> and open the Serial Monitor at 115200.','Stay quiet for 2 seconds, then clap, then talk.'],
+ {n:'3 · Microphone',tag:'RUN_MODE 2',
+  d:['Set <code>RUN_MODE</code> to <code>2</code> in <code>ai_bot.ino</code>, upload, and open the Serial Monitor at 115200 (the OLED shows a level bar too).','Stay quiet for 2 seconds, then clap, then talk.'],
   e:['<code>level</code> stays small and the <code>#</code> bar is short when quiet.','The bar grows clearly when you clap or talk.'],
-  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: later lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code>.']},
- {n:'4 · Speaker',tag:'test_speaker.ino',
-  d:['Upload <code>test_speaker.ino</code>.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
+  f:['Always 0: check SD to GPIO33, SCK to GPIO14, WS to GPIO25 and L/R to GND.','Always very high: L/R floating or a loose wire, power off and recheck.','Very small even when you talk: lower <code>MIC_SHIFT</code> by 1 in <code>ai_bot.ino</code> (13 is twice as sensitive as 14).']},
+ {n:'4 · Speaker',tag:'RUN_MODE 3',
+  d:['Set <code>RUN_MODE</code> to <code>3</code> in <code>ai_bot.ino</code> and upload.','Speaker + goes to VO+ and speaker − goes to VO−. Do not connect either to GND.'],
   e:['A soft two-note beep every 2 seconds, and "beep" in the Serial Monitor.'],
   f:['Silence: check VIN to 5V (needs USB power), DIN to GPIO22, BCLK to GPIO14, LRC to GPIO25.','Distorted: lower <code>VOLUME</code> in the sketch.','Hum with no beep: the speaker wires are on GND.']},
  {n:'5 · Can the ESP32 reach your Mac',tag:'network',
   d:['On your phone, on the same WiFi as the Mac, open <code>http://YOUR-MAC-IP:8000</code>.','If it does not load: macOS Firewall, allow Python. System Settings &gt; Privacy &amp; Security &gt; Local Network, allow Terminal.'],
   e:['The Pip server page loads on the phone.'],
   f:['Use your phone hotspot for both the Mac and the ESP32 if venue WiFi blocks devices from each other.']},
+ {n:'5b · Live dashboard',tag:'server + ESP32',
+  d:['Re-download <code>server.py</code> and <code>dashboard.html</code> into the same folder, then restart the server.','Open <code>http://localhost:8000/dashboard</code> on your Mac.','Click <b>Run self-test</b>. Click <b>Play all faces on the device</b> and <b>Beep the speaker</b>.'],
+  e:['The top chips say "Server running" and "ESP32 online (192.168.x.x)".','The microphone level bar jumps when you clap, and goes orange above the threshold line.','Self-test shows ✓ for ffmpeg, voice, hearing, brain and ESP32, and you hear a test sentence.','The real OLED steps through all 16 faces, and the speaker beeps.'],
+  f:['ESP32 not reporting: upload the latest <code>ai_bot.ino</code>, check <code>SERVER_HOST</code> is your Mac\'s IP on the same WiFi, and test <code>http://MAC-IP:8000</code> on your phone.','Brain shows ✗: your keys are missing or wrong. The chain on the dashboard shows each brain\'s error.']},
  {n:'6 · First conversation',tag:'full bot',
-  d:['In <code>ai_bot.ino</code> set <code>FACE_TEST_ONLY</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
+  d:['In <code>ai_bot.ino</code> set <code>RUN_MODE</code> back to <code>0</code> and upload.','Open the Serial Monitor. Stay quiet for the 1 second calibration.','Say: "Hello Pip, tell me a fun fact."'],
   e:['<pre>ESP32 IP: 192.168.x.x\nNoise floor 62, speech threshold 187\nSent 2100 ms of audio\nServer: HTTP 200, emotion=surprised, text=...</pre>','The face goes listening, then thinking, then the speaker answers with the mouth moving, and the emotion face stays for 4 seconds.','The server terminal prints <code>heard: ...</code> and the reply.'],
-  f:['Never wakes: lower <code>MIC_SHIFT</code> by 1 and restart.','Wakes on its own: raise <code>MIC_SHIFT</code> by 1, restart in a quiet room.','"Cannot reach server": recheck <code>SERVER_HOST</code> and test 5.','Server hears nothing (<code>heard: \'\'</code>): speak closer, use <code>WHISPER_MODEL=small.en</code>.']},
+  f:['Never wakes: lower <code>MIC_SHIFT</code> by 1 and restart.','Sends 6000 ms recordings over and over and the server says 204: the room is noisy or people are talking nearby. Press <b>Listening</b> on the dashboard (or key <code>m</code>) to mute while others talk, and keep the mic away from voices.','Wakes on its own: raise <code>MIC_SHIFT</code> by 1, restart in a quiet room.','"Cannot reach server": recheck <code>SERVER_HOST</code> and test 5.','Server hears nothing (<code>heard: \'\'</code>): speak closer, use <code>WHISPER_MODEL=small.en</code>.']},
  {n:'7 · Modes',tag:'full bot',
   d:['Say "study mode", then ask "give me a study tip".','Say "mood mode", then "I had a rough day".','Say "sleep mode", then "say goodnight".','You can also press <code>1</code> to <code>4</code> in the Serial Monitor.'],
   e:['It confirms each mode out loud.','Study answers are short and practical, mood answers show a sad or shy face, sleep answers are soft and sleepy.'],
@@ -790,7 +914,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware (main sketch)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['mic_transcribe_test.ino','f-mtt','firmware/mic_transcribe_test/mic_transcribe_test.ino','Mic-only test: records 5 s, prints the words you said, and lets you listen to the recording'],['speaker_voice_test.ino','f-spv','firmware/speaker_voice_test/speaker_voice_test.ino','Speaker-only test that SAYS "Hello! I am Pip" (voice built in, no WiFi needed)'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page with live logs (put it next to server.py). Open http://localhost:8000/dashboard']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});
