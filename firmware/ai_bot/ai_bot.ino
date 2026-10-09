@@ -336,6 +336,10 @@ void animate() {
 
 // ================= audio =================
 int micShift = MIC_SHIFT;     // the gain actually in use (changes by itself, see setMicShift)
+// The wiring actually in use. The firmware tests the common wiring mistakes at start-up and adopts the combination
+// that gives a clean microphone signal (see autoWire), so a swapped BCLK/WS pair or L/R on 3V3 still works.
+int pinBclk = PIN_I2S_BCLK, pinWs = PIN_I2S_WS, pinDin = PIN_MIC_SD, pinDout = PIN_AMP_DIN;
+int micChannel = 0;           // 0 = left slot (mic L/R pin on GND), 1 = right slot (L/R pin on 3V3)
 // Reads n mono samples (left channel of the 32-bit stereo I2S stream). INMP441 data is in the top 24 bits.
 size_t readMono(int16_t* out, size_t n) {
   static int32_t tmp[2 * 160];
@@ -345,7 +349,7 @@ size_t readMono(int16_t* out, size_t n) {
     size_t got = i2s.readBytes((char*)tmp, want * 8) / 8;
     if (!got) break;
     for (size_t i = 0; i < got; i++) {
-      int32_t v = tmp[2 * i] >> micShift;
+      int32_t v = tmp[2 * i + micChannel] >> micShift;
       out[done + i] = (int16_t)constrain(v, -32768, 32767);
     }
     done += got;
@@ -779,12 +783,51 @@ long captureRaw(Chan& L, Chan& R, int ms) {   // returns how many stereo frames 
   return frames;
 }
 
+bool startI2S(int bclk, int ws, int dout, int din) {
+  i2s.end();
+  i2s.setPins(bclk, ws, dout, din);
+  return i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH);
+}
+
+bool cleanChan(const Chan& c) { long ac = chanAc(c); return chanAlive(c) && ac >= 100 && ac < 60000; }
+
+// Looks for a clean microphone signal with the wire combinations people most often get wrong:
+//   1) as in the sketch  2) BCLK and WS swapped  3) mic SD and amp DIN swapped  4) both swapped.
+// BCLK and WS are shared by the mic and the amplifier, so a swapped pair breaks BOTH (noise from the mic, silence from the speaker).
+bool autoWire(bool verbose) {
+  struct Combo { bool swapClk, swapData; const char* name; };
+  const Combo combos[4] = {{false, false, "as wired in the sketch"}, {true, false, "BCLK and WS swapped"},
+                           {false, true, "mic SD and amp DIN swapped"}, {true, true, "both swapped"}};
+  for (int k = 0; k < 4; k++) {
+    int b  = combos[k].swapClk  ? PIN_I2S_WS   : PIN_I2S_BCLK, w    = combos[k].swapClk  ? PIN_I2S_BCLK : PIN_I2S_WS;
+    int di = combos[k].swapData ? PIN_AMP_DIN  : PIN_MIC_SD,   dout = combos[k].swapData ? PIN_MIC_SD    : PIN_AMP_DIN;
+    if (!startI2S(b, w, dout, di)) { LOGE("I2S", "could not start I2S for: %s", combos[k].name); continue; }
+    Chan L, R;
+    long fr = captureRaw(L, R, 600);
+    bool lc = cleanChan(L), rc = cleanChan(R);
+    LOGI("I2S", "wiring test [%s] BCLK=%d WS=%d SD=%d: %ld frames | LEFT wiggle %ld %s | RIGHT wiggle %ld %s", combos[k].name, b, w, di, fr,
+         chanAc(L), lc ? "CLEAN" : "no", chanAc(R), rc ? "CLEAN" : "no");
+    if (lc || rc) {
+      pinBclk = b; pinWs = w; pinDin = di; pinDout = dout;
+      micChannel = (lc && (!rc || chanAc(L) <= chanAc(R))) ? 0 : 1;
+      if (k > 0) LOGE("I2S", "FOUND IT: the microphone only works with '%s'. Your real wires differ from the sketch. Using that now. To make it permanent, swap those wires, or change the PIN_ lines at the top of the sketch", combos[k].name);
+      LOGI("I2S", "microphone found on the %s slot", micChannel == 0 ? "LEFT" : "RIGHT");
+      if (micChannel == 1) LOGE("I2S", "the mic answers on the RIGHT slot, so its L/R pin is probably on 3V3. Using the right slot. For the standard setup connect L/R to GND");
+      return true;
+    }
+  }
+  startI2S(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);   // nothing clean anywhere: go back to the sketch's own pins
+  pinBclk = PIN_I2S_BCLK; pinWs = PIN_I2S_WS; pinDin = PIN_MIC_SD; pinDout = PIN_AMP_DIN; micChannel = 0;
+  LOGE("I2S", "NO wire combination gives a clean microphone signal. So it is not just swapped wires. Check: mic VDD on 3V3 (not 5V), mic GND, the SD wire really on GPIO%d, L/R on GND, short wires, no loose breadboard contact", PIN_MIC_SD);
+  return false;
+}
+
 void runDiagnostics() {
   diagFails = 0; diagSummary = "";
   char buf[200];
   LOGI("DIAG", "=================== PIP DIAGNOSTIC REPORT (start) ===================");
   LOGI("DIAG", "Copy everything from this line to the END line and send it for help.");
-  LOGI("DIAG", "Pins: BCLK=%d WS=%d mic SD=%d amp DIN=%d | OLED SDA=%d SCL=%d | server %s:%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, SERVER_HOST, SERVER_PORT);
+  LOGI("DIAG", "Sketch pins: BCLK=%d WS=%d mic SD=%d amp DIN=%d | OLED SDA=%d SCL=%d | server %s:%d", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN, OLED_SDA, OLED_SCL, SERVER_HOST, SERVER_PORT);
   LOGI("DIAG", "Settings: MIC_SHIFT %d, SPEAKER_VOLUME %d%%", micShift, SPEAKER_VOLUME);
 
   // 1. power
@@ -819,21 +862,27 @@ void runDiagnostics() {
   // 4. microphone, raw
   LOGI("DIAG", "--- 4. Microphone: stay QUIET for 2 seconds ---");
   ledSet(LED_THINK); ledUpdate();
+  bool wiringOk = autoWire(true);       // tries the common wiring mistakes and keeps the combination that works
+  check(wiringOk, "a clean microphone signal exists with the wiring in use", wiringOk ? "" : "no pin or channel combination gives a clean signal: see the I2S lines above");
+  check(pinBclk == PIN_I2S_BCLK && pinWs == PIN_I2S_WS, "BCLK and WS wires match the sketch", (pinBclk == PIN_I2S_BCLK && pinWs == PIN_I2S_WS) ? "" : "SWAPPED on the board: GPIO14 and GPIO25 wires are crossed (the mic and the amp share them, so this breaks both). Swap the two wires, or the firmware keeps using the swapped pins");
+  check(pinDin == PIN_MIC_SD, "mic SD and amp DIN wires match the sketch", pinDin == PIN_MIC_SD ? "" : "SWAPPED on the board: the mic SD and amp DIN wires are crossed (GPIO33 and GPIO22)");
+  check(micChannel == 0, "microphone L/R pin is on GND (left slot)", micChannel == 0 ? "" : "the mic answers on the RIGHT slot: its L/R pin is on 3V3. Connect it to GND");
   Chan L, R;
   long frames = captureRaw(L, R, 2000);
+  Chan& M = (micChannel == 0) ? L : R;   // the channel the microphone is really on
   LOGI("DIAG", "I2S read %ld frames (expected about %d)", frames, SAMPLE_RATE * 2);
   LOGI("DIAG", "LEFT  channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", L.n ? L.zeros * 100 / L.n : 0L, (long)L.mn, (long)L.mx, chanAc(L));
   LOGI("DIAG", "RIGHT channel: %ld%% zeros, range %ld .. %ld, wiggle %ld", R.n ? R.zeros * 100 / R.n : 0L, (long)R.mn, (long)R.mx, chanAc(R));
   check(frames > SAMPLE_RATE, "I2S is receiving audio frames", frames > SAMPLE_RATE ? "" : "nothing arrives: the I2S clock is not running. Check BCLK=GPIO14 and WS=GPIO25 wires");
-  bool lAlive = chanAlive(L), rAlive = chanAlive(R);
+  bool lAlive = chanAlive(M), rAlive = chanAlive(micChannel == 0 ? R : L);
   const char* micHint = "";
   if (!lAlive && rAlive) micHint = "the data is on the RIGHT channel: connect the mic's L/R pin to GND (not 3V3)";
   else if (!lAlive) micHint = "all zeros or constant: check mic VDD=3V3, GND, SD=GPIO33, SCK=GPIO14, WS=GPIO25 and L/R=GND, and that SD is not swapped with another wire";
-  check(lAlive, "microphone sends data on the LEFT channel", micHint);
-  long ac = chanAc(L);
+  check(lAlive, "microphone sends data", micHint);
+  long ac = chanAc(M);
   snprintf(buf, sizeof(buf), "wiggle %ld: a working mic in a quiet room shows roughly 300 to 20000. Below 100 = the SD wire is floating or disconnected. Above 60000 = loud noise nearby, or interference on the SD/clock wires (keep them short, away from the speaker wires)", ac);
   check(lAlive && ac > 100 && ac < 60000, "microphone noise level looks like a real microphone", (lAlive && ac > 100 && ac < 60000) ? "" : buf);
-  bool stuckHigh = L.n && fabs(L.sum / L.n) > 6000000.0;
+  bool stuckHigh = M.n && fabs(M.sum / M.n) > 6000000.0;
   check(!stuckHigh, "microphone data is not stuck at full scale", stuckHigh ? "the SD line is stuck high: wire shorted to 3V3, or the mic has no ground" : "");
 
   // 5. microphone reacts to sound
@@ -933,19 +982,20 @@ void setup() {
   LOGI("WIFI", "the Mac must be on this same network: its IP should start like %s", WiFi.localIP().toString().c_str());
   probeServer();
 #endif
-  i2s.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DIN, PIN_MIC_SD);
-  if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
+  if (!startI2S(pinBclk, pinWs, pinDout, pinDin)) {
     LOGE("I2S", "I2S failed to start (BCLK=%d WS=%d mic SD=%d amp DIN=%d). Set RUN_MODE 4 for the diagnostic", PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
     message("I2S failed", "check wiring");
     ledSet(LED_ERROR);
     while (true) { ledUpdate(); delay(20); }
   }
-  LOGI("I2S", "started: %d Hz, 32-bit stereo. Clock BCLK=GPIO%d WS=GPIO%d, mic data in GPIO%d, speaker data out GPIO%d", SAMPLE_RATE, PIN_I2S_BCLK, PIN_I2S_WS, PIN_MIC_SD, PIN_AMP_DIN);
+  LOGI("I2S", "started: %d Hz, 32-bit stereo. Clock BCLK=GPIO%d WS=GPIO%d, mic data in GPIO%d, speaker data out GPIO%d", SAMPLE_RATE, pinBclk, pinWs, pinDin, pinDout);
 #if RUN_MODE == 0
+  autoWire(false);
   calibrate();
   LOGI("BOOT", "READY. Say a short sentence close to the microphone. LED: short blip = listening, solid = recording, blinking = thinking");
   ledSet(LED_IDLE);
 #elif RUN_MODE == 2
+  autoWire(false);
   LOGI("BOOT", "MIC TEST: talk or clap, the bar on the OLED should grow.");
   ledSet(LED_IDLE);
 #elif RUN_MODE == 3
