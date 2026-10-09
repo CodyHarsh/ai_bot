@@ -221,20 +221,65 @@ def offline_reply(text: str) -> dict:
     return {"emotion": face_for(tone, text), "text": reply, "tone": tone}
 
 
-def call_one(name: str, system: str, messages: list) -> str:
-    if name == "anthropic":
-        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
-        return resp.content[0].text
-    base, _, default_model, model_env = PRESETS[name]
-    model = os.getenv(model_env) or default_model
-    r = httpx.post(
+NOT_CHAT = re.compile(r"whisper|tts|audio|speech|transcribe|realtime|embed|guard|moderation|image|imagen|veo|vision|robotics|computer-use|"
+                      r"search|codex|instruct|aqa|learnlm|gemma|orpheus|safeguard|live|dall|davinci|babbage|sora|diffusion", re.I)
+MODEL_PREFERENCE = {  # earlier words win; the newest matching model is picked
+    "groq": ["llama-3.3-70b", "llama-3.1-8b", "llama", "gpt-oss", "qwen"],
+    "gemini": ["flash", "pro"],
+    "openai": ["gpt-4o-mini", "mini", "gpt-4o", "gpt"],
+    "ollama": ["llama", "qwen", "gemma", "mistral", ""],
+    "custom": [""],
+}
+found_models = {}   # provider -> model that actually worked
+
+
+def discover_model(name: str):
+    """Ask the provider which models exist and pick a sensible chat model. Used when the default name is gone."""
+    base = PRESETS[name][0].rstrip("/")
+    r = httpx.get(base + "/models", headers={"Authorization": "Bearer " + (provider_key(name) or "none")}, timeout=15)
+    r.raise_for_status()
+    ids = [m.get("id", "").replace("models/", "") for m in r.json().get("data", [])]
+    ids = [i for i in ids if i and not NOT_CHAT.search(i)]
+    stable = [i for i in ids if not re.search(r"preview|exp|beta|latest", i, re.I)] or ids
+    for word in MODEL_PREFERENCE.get(name, [""]):
+        hits = sorted([i for i in stable if word in i], reverse=True)
+        if hits:
+            return hits[0]
+    return None
+
+
+def post_chat(name: str, model: str, system: str, messages: list):
+    base = PRESETS[name][0]
+    return httpx.post(
         base.rstrip("/") + "/chat/completions",
         headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
         json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
               **({"max_completion_tokens": 200} if name == "openai" else {"max_tokens": 200, "temperature": 0.8})},
         timeout=60 if name == "ollama" else 20,
     )
-    r.raise_for_status()
+
+
+def call_one(name: str, system: str, messages: list) -> str:
+    if name == "anthropic":
+        resp = llm.messages.create(model=CLAUDE_MODEL, max_tokens=200, system=system, messages=messages, timeout=20)
+        return resp.content[0].text
+    _, _, default_model, model_env = PRESETS[name]
+    forced = os.getenv(model_env)                      # a model you set yourself is never replaced
+    model = forced or found_models.get(name) or default_model
+    r = post_chat(name, model, system, messages)
+    if r.status_code in (400, 404) and not forced:     # the default model name is probably retired: find a current one
+        try:
+            better = discover_model(name)
+        except Exception as e:
+            better = None
+            print(f"[{name}] could not list models: {e}")
+        if better and better != model:
+            print(f"[{name}] model '{model}' did not work, trying '{better}'")
+            r = post_chat(name, better, system, messages)
+            if r.status_code < 400:
+                found_models[name] = better
+    if r.status_code >= 400:   # show the provider's own explanation, e.g. "insufficient_quota" or "model not found"
+        raise RuntimeError(f"HTTP {r.status_code} (model {model}): {r.text[:300]}")
     return r.json()["choices"][0]["message"]["content"]
 
 
