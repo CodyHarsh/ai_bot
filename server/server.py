@@ -28,21 +28,39 @@ from faster_whisper import WhisperModel
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
+
+def load_env_file(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """Optional: read KEY=value lines from a .env file next to this script (keeps secrets out of the terminal)."""
+    if not os.path.exists(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_env_file()
+
 # The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
 # the next one answers, and the built-in offline replies are the last resort.
-#   default chain:  gemini -> groq -> ollama -> anthropic
+#   default chain:  gemini -> groq -> ollama -> anthropic -> openai   (then the built-in offline replies)
 #   change it:      export LLM_CHAIN=gemini,ollama          (or one name, like LLM_CHAIN=groq)
 # Keys (set only the ones you have):
 #   GEMINI_API_KEY (free, aistudio.google.com)   GROQ_API_KEY (free, console.groq.com)
-#   ANTHROPIC_API_KEY (paid)                     ollama needs no key (ollama.com, then: ollama pull llama3.2)
-# Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL.
-# Any other OpenAI-style service: add "openai" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
-CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic")).split(",") if x.strip()]
+#   ANTHROPIC_API_KEY (paid)   OPENAI_API_KEY (paid, last fallback)
+#   ollama needs no key (ollama.com, then: ollama pull llama3.2)
+# Keys can go in the terminal (export ...) or in a .env file next to this script (see .env.example).
+# Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL.
+# Any other OpenAI-style service: add "custom" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
+# The voice does not depend on the brain: it is always TTS_VOICE (edge-tts), whichever provider answered.
+CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic,openai")).split(",") if x.strip()]
 PRESETS = {  # base url, key env var(s), default model, model env var
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-2.5-flash", "GEMINI_MODEL"),
     "groq": ("https://api.groq.com/openai/v1", ("GROQ_API_KEY",), "llama-3.1-8b-instant", "GROQ_MODEL"),
     "ollama": ("http://localhost:11434/v1", (), "llama3.2", "OLLAMA_MODEL"),
-    "openai": (os.getenv("LLM_BASE_URL", ""), ("LLM_API_KEY",), os.getenv("LLM_MODEL", ""), "LLM_MODEL"),
+    "openai": ("https://api.openai.com/v1", ("OPENAI_API_KEY",), "gpt-4o-mini", "OPENAI_MODEL"),
+    "custom": (os.getenv("LLM_BASE_URL", ""), ("LLM_API_KEY",), os.getenv("LLM_MODEL", ""), "LLM_MODEL"),
 }
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
 COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
@@ -157,7 +175,7 @@ def call_one(name: str, system: str, messages: list) -> str:
         base.rstrip("/") + "/chat/completions",
         headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
         json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
-              "max_tokens": 200, "temperature": 0.8},
+              **({"max_completion_tokens": 200} if name == "openai" else {"max_tokens": 200, "temperature": 0.8})},
         timeout=60 if name == "ollama" else 20,
     )
     r.raise_for_status()

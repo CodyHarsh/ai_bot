@@ -371,11 +371,11 @@ flowchart LR
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
-      <h3>The brain chain: Gemini first, with fallbacks</h3>
+      <h3>The brain chain: Gemini first, OpenAI last</h3>
       <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
       <pre class="mermaid">
 flowchart LR
-  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| E[Built-in replies]
+  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| F[OpenAI<br/>paid, last] -->|fails| E[Built-in replies]
       </pre>
       <div class="scroll"><table>
         <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal</th></tr></thead>
@@ -384,9 +384,10 @@ flowchart LR
           <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export GROQ_API_KEY=...</code></td></tr>
           <tr><td><b>Ollama</b></td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td>No key. Keep the Ollama app running</td></tr>
           <tr><td><b>Claude</b></td><td>Needs paid credit</td><td><code>export ANTHROPIC_API_KEY=...</code></td></tr>
+          <tr><td><b>OpenAI</b> (last)</td><td>Key at platform.openai.com, needs credit</td><td><code>export OPENAI_API_KEY=...</code></td></tr>
         </tbody>
       </table></div>
-      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. <b>The voice is always the same</b> (the cute edge-tts voice), whichever brain wrote the reply. Prefer a file to typing <code>export</code>? Copy <code>.env.example</code> to <code>.env</code> in the server folder, fill in your keys, and the server reads it. It is ignored by git. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
     </div>
   </section>
 </div>

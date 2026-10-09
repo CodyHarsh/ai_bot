@@ -920,21 +920,39 @@ from faster_whisper import WhisperModel
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
+
+def load_env_file(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """Optional: read KEY=value lines from a .env file next to this script (keeps secrets out of the terminal)."""
+    if not os.path.exists(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_env_file()
+
 # The brain is a chain of providers tried in order. If one fails (no key, rate limit, no internet, no credit),
 # the next one answers, and the built-in offline replies are the last resort.
-#   default chain:  gemini -&gt; groq -&gt; ollama -&gt; anthropic
+#   default chain:  gemini -&gt; groq -&gt; ollama -&gt; anthropic -&gt; openai   (then the built-in offline replies)
 #   change it:      export LLM_CHAIN=gemini,ollama          (or one name, like LLM_CHAIN=groq)
 # Keys (set only the ones you have):
 #   GEMINI_API_KEY (free, aistudio.google.com)   GROQ_API_KEY (free, console.groq.com)
-#   ANTHROPIC_API_KEY (paid)                     ollama needs no key (ollama.com, then: ollama pull llama3.2)
-# Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL.
-# Any other OpenAI-style service: add "openai" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
-CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic")).split(",") if x.strip()]
+#   ANTHROPIC_API_KEY (paid)   OPENAI_API_KEY (paid, last fallback)
+#   ollama needs no key (ollama.com, then: ollama pull llama3.2)
+# Keys can go in the terminal (export ...) or in a .env file next to this script (see .env.example).
+# Model overrides: GEMINI_MODEL, GROQ_MODEL, OLLAMA_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL.
+# Any other OpenAI-style service: add "custom" to the chain with LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
+# The voice does not depend on the brain: it is always TTS_VOICE (edge-tts), whichever provider answered.
+CHAIN = [x.strip().lower() for x in os.getenv("LLM_CHAIN", os.getenv("LLM_PROVIDER", "gemini,groq,ollama,anthropic,openai")).split(",") if x.strip()]
 PRESETS = {  # base url, key env var(s), default model, model env var
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "gemini-2.5-flash", "GEMINI_MODEL"),
     "groq": ("https://api.groq.com/openai/v1", ("GROQ_API_KEY",), "llama-3.1-8b-instant", "GROQ_MODEL"),
     "ollama": ("http://localhost:11434/v1", (), "llama3.2", "OLLAMA_MODEL"),
-    "openai": (os.getenv("LLM_BASE_URL", ""), ("LLM_API_KEY",), os.getenv("LLM_MODEL", ""), "LLM_MODEL"),
+    "openai": ("https://api.openai.com/v1", ("OPENAI_API_KEY",), "gpt-4o-mini", "OPENAI_MODEL"),
+    "custom": (os.getenv("LLM_BASE_URL", ""), ("LLM_API_KEY",), os.getenv("LLM_MODEL", ""), "LLM_MODEL"),
 }
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
 COOLDOWN_SECONDS = 90        # after a provider fails, skip it for this long so replies stay fast
@@ -1049,7 +1067,7 @@ def call_one(name: str, system: str, messages: list) -&gt; str:
         base.rstrip("/") + "/chat/completions",
         headers={"Authorization": "Bearer " + (provider_key(name) or "none")},
         json={"model": model, "messages": [{"role": "system", "content": system}] + messages,
-              "max_tokens": 200, "temperature": 0.8},
+              **({"max_completion_tokens": 200} if name == "openai" else {"max_tokens": 200, "temperature": 0.8})},
         timeout=60 if name == "ollama" else 20,
     )
     r.raise_for_status()
@@ -1266,11 +1284,11 @@ flowchart LR
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
     <div class="card" style="margin-top:16px">
-      <h3>The brain chain: Gemini first, with fallbacks</h3>
+      <h3>The brain chain: Gemini first, OpenAI last</h3>
       <p>The server tries each brain in order. If one fails (no key, rate limit, no internet, no credit), the next one answers. A failed brain is skipped for 90 seconds so replies stay fast. If every brain fails, Pip uses built-in replies and keeps talking.</p>
       <pre class="mermaid">
 flowchart LR
-  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| E[Built-in replies]
+  A[Gemini<br/>free] -->|fails| B[Groq<br/>free] -->|fails| C[Ollama<br/>on your Mac] -->|fails| D[Claude<br/>paid] -->|fails| F[OpenAI<br/>paid, last] -->|fails| E[Built-in replies]
       </pre>
       <div class="scroll"><table>
         <thead><tr><th>Brain</th><th>Get it</th><th>Set in the terminal</th></tr></thead>
@@ -1279,9 +1297,10 @@ flowchart LR
           <tr><td><b>Groq</b></td><td>Free key at console.groq.com</td><td><code>export GROQ_API_KEY=...</code></td></tr>
           <tr><td><b>Ollama</b></td><td>Install from ollama.com, then <code>ollama pull llama3.2</code></td><td>No key. Keep the Ollama app running</td></tr>
           <tr><td><b>Claude</b></td><td>Needs paid credit</td><td><code>export ANTHROPIC_API_KEY=...</code></td></tr>
+          <tr><td><b>OpenAI</b> (last)</td><td>Key at platform.openai.com, needs credit</td><td><code>export OPENAI_API_KEY=...</code></td></tr>
         </tbody>
       </table></div>
-      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
+      <p>Set only the keys you have. A brain with no key is skipped. The terminal prints the chain when the server starts, and each reply shows which brain answered. To change the order: <code>export LLM_CHAIN=gemini,ollama</code>. <b>The voice is always the same</b> (the cute edge-tts voice), whichever brain wrote the reply. Prefer a file to typing <code>export</code>? Copy <code>.env.example</code> to <code>.env</code> in the server folder, fill in your keys, and the server reads it. It is ignored by git. Google may use free-tier Gemini prompts to improve its models, so keep private things out of it.</p>
     </div>
   </section>
 </div>
