@@ -385,6 +385,7 @@ const int   SERVER_PORT = 8000;
 #define RUN_MODE 0           // 0 = full voice bot, 1 = face test, 2 = microphone test, 3 = speaker test, 4 = DIAGNOSTIC report
 #define LOG_LEVEL 3          // 0 = silent, 1 = errors only, 2 = normal, 3 = detailed. Logs go to the Serial Monitor AND the dashboard.
 #define PIN_LED 2            // status LED (the small blue LED on most ESP32 boards). -1 = no LED. Patterns are listed below.
+#define DEVICE_SPEAKER 0     // 0 = the voice plays on the LAPTOP; the board does not drive the amplifier at all (cleanest microphone). 1 = play on the speaker wired to the board
 #define SPEAKER_VOLUME 200   // percent: 100 = as received, 200 = twice as loud, 300 = three times (a soft limiter avoids harsh clipping)
 #define MIC_SHIFT 15         // starting mic gain: lower = louder. 15 = normal (tested: speech peaks at 50-70%), 14 = 2x louder, 13 = 4x (can clip). It adjusts itself if the mic clips or is too quiet
 // ======================================================
@@ -774,10 +775,14 @@ void sendChunk(WiFiClient&amp; c, const int16_t* data, size_t samples) {
   c.print("\r\n");
 }
 
+size_t spkWrite(uint8_t* d, size_t n) {   // sends sound to the amplifier, or does nothing when the laptop plays it
+  return DEVICE_SPEAKER ? i2s.write(d, n) : n;
+}
+
 void playSilence(int ms) {
   static int32_t z[2 * 160];
   memset(z, 0, sizeof(z));
-  for (int i = 0; i &lt; ms / 10; i++) i2s.write((uint8_t*)z, sizeof(z));
+  for (int i = 0; i &lt; ms / 10; i++) spkWrite((uint8_t*)z, sizeof(z));
 }
 
 // Volume with a soft limiter: loud peaks are squeezed instead of cut off, so higher volume stays clean.
@@ -800,7 +805,7 @@ void playTone(float freq, int ms) {
       if (phase &gt; 2 * PI) phase -= 2 * PI;
       out[2 * i] = out[2 * i + 1] = v &lt;&lt; 16;
     }
-    i2s.write((uint8_t*)out, sizeof(out));
+    spkWrite((uint8_t*)out, sizeof(out));
   }
 }
 
@@ -922,8 +927,8 @@ void receiveAndPlay(WiFiClient&amp; c) {
       out[2 * i] = out[2 * i + 1] = v &lt;&lt; 16;
     }
     size_t w = ns * 8;
-    if (laptopPlay) delay(ns / 16);   // the laptop plays the sound: just keep the face moving in time with it
-    else w = i2s.write((uint8_t*)out, ns * 8);
+    if (laptopPlay || !DEVICE_SPEAKER) delay(ns / 16);   // the laptop plays the sound: just keep the face moving in time with it
+    else w = spkWrite((uint8_t*)out, ns * 8);
     bytesOut += w;
     if (w != (size_t)(ns * 8)) shortWrites++;
     talkAmp = 0.6f * talkAmp + 0.4f * min(1.0f, (e / max(ns, 1)) / (5000.0f * SPEAKER_VOLUME / 100.0f));
@@ -1142,6 +1147,7 @@ long captureRaw(Chan&amp; L, Chan&amp; R, int ms) {   // returns how many stereo
 }
 
 bool startI2S(int bclk, int ws, int dout, int din) {
+  if (!DEVICE_SPEAKER) dout = -1;   // microphone only: leave the amplifier line idle, like the mic test that works
   i2s.end();
   i2s.setPins(bclk, ws, dout, din);
   return i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH);
