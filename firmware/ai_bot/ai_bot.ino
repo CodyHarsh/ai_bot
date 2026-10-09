@@ -618,6 +618,27 @@ int median5(const int* h) {
   return a[2];
 }
 
+// Tells you WHEN to speak (push-to-talk): a big "SPEAK NOW" on the OLED plus a short beep on the laptop.
+void showCue() {
+  display.clearDisplay();
+  display.setTextColor(W); display.setTextSize(2);
+  display.setCursor(22, 12); display.print("SPEAK");
+  display.setCursor(34, 36); display.print("NOW!");
+  display.display();
+  Serial.println();
+  Serial.println("  >>> SPEAK NOW <<<");
+  Serial.println();
+}
+
+void dingServer() {
+  WiFiClient d;
+  if (!d.connect(SERVER_HOST, SERVER_PORT, 800)) return;
+  d.print(String("GET /api/ding HTTP/1.1\r\nHost: ") + SERVER_HOST + "\r\nConnection: close\r\n\r\n");
+  unsigned long t0 = millis();
+  while (!d.available() && d.connected() && millis() - t0 < 1500) delay(5);
+  d.stop();
+}
+
 void conversation() {
   lastActivity = millis();
   setFace(LISTENING); drawFace();
@@ -629,6 +650,11 @@ void conversation() {
   if (byButton) LOGI("VAD", "BOOT button pressed: recording while you hold it...");
   else if (byKey) LOGI("VAD", "key r: recording for 4 seconds...");
   else LOGI("VAD", "speech detected: level %d is above the threshold %d, recording...", lastLevel, threshold);
+  if (manual) {
+    showCue();                                                 // OLED: SPEAK NOW
+    dingServer();                                              // laptop: a short beep
+    for (int i = 0; i < 14; i++) readMono(frameBuf, FRAME);    // drop the audio captured during the beep (stops it being recorded)
+  }
   WiFiClient c;
   c.setNoDelay(true);
   unsigned long tc = millis();
@@ -665,7 +691,7 @@ void conversation() {
     memcpy(batch + bn * FRAME, frameBuf, FRAME * 2);
     if (++bn == 5) { sendChunk(c, batch, FRAME * 5); bn = 0; }
     frames++;
-    if (millis() - lastDraw > 200) { animate(); drawFace(); lastDraw = millis(); }
+    if (!manual && millis() - lastDraw > 200) { animate(); drawFace(); lastDraw = millis(); }
     ledUpdate();
   }
   if (bn) sendChunk(c, batch, FRAME * bn);

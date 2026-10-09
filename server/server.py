@@ -797,6 +797,17 @@ async def devlog(request: Request):
     return PlainTextResponse("ok\n")
 
 
+@app.get("/api/ding")  # a short "go ahead" beep on the laptop: the board calls it when push-to-talk starts, so you know when to speak
+async def ding():
+    n = int(SAMPLE_RATE * 0.16)
+    x = np.arange(n) / SAMPLE_RATE
+    env = np.minimum(1.0, np.minimum(x / 0.01, (0.16 - x) / 0.04))
+    wave_ = (np.sin(2 * np.pi * 988 * x) + 0.5 * np.sin(2 * np.pi * 1480 * x)) / 1.5 * env * 0.6
+    await play_on_laptop((wave_ * 32767).astype(np.int16).tobytes())
+    await asyncio.sleep(0.4)   # the board waits for the beep to finish before it records
+    return {"ok": True}
+
+
 @app.get("/api/laptop-test")  # plays a sentence on the laptop speakers: proves the Mac side works
 async def laptop_test(text: str = "Hello! I am Pip. This is the laptop speaker."):
     audio = await speak(text[:200])
