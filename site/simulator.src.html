@@ -365,8 +365,27 @@ flowchart LR
       </div>
     </div>
     <div class="card" style="margin-top:16px">
+      <h3>Pip reads your tone and shows it on its face</h3>
+      <p>Before answering, the server judges how you sound. The LLM does this, and a quick keyword check backs it up, so it works even when no LLM is reachable. Pip then shows a face that matches your feeling. If the LLM picks a cheerful face for someone who is hurting, the server corrects it.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>You sound</th><th>Example</th><th>Pip's face</th></tr></thead>
+        <tbody>
+          <tr><td>sad or lonely</td><td>"I had a rough day"</td><td>sad (cry if very upset)</td></tr>
+          <tr><td>angry</td><td>"My brother is so annoying"</td><td>pout</td></tr>
+          <tr><td>anxious</td><td>"I am worried about my exam"</td><td>shy</td></tr>
+          <tr><td>tired</td><td>"I am so tired"</td><td>sleepy</td></tr>
+          <tr><td>excited</td><td>"I got the job!"</td><td>excited</td></tr>
+          <tr><td>loving</td><td>"I love you Pip"</td><td>love</td></tr>
+          <tr><td>playful</td><td>"Tell me a joke"</td><td>silly</td></tr>
+          <tr><td>curious</td><td>"What is the moon?"</td><td>curious</td></tr>
+        </tbody>
+      </table></div>
+      <p>It understands simple negation: "I am not sad" is not treated as sad. The server prints the tone for each message, and sends it to the ESP32 in the <code>X-Tone</code> header.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
       <h3>Reply format the LLM must follow</h3>
-      <pre class="code">{"emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
+      <pre class="code">{"tone": "sad|lonely|angry|anxious|tired|excited|loving|playful|happy|curious|neutral",
+ "emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
  "text": "1 or 2 short sentences, under 160 characters"}</pre>
       <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
     </div>
@@ -544,12 +563,30 @@ const RULES=[
   [/hello|hi pip|hey/,'happy','Hi hi! I am so happy you are here!']
 ];
 const FALLBACK=[['happy','Ask me anything. I am all ears!'],['thinking','Good question. Let us break it into small parts.'],['love','Tell me more. I am listening.'],['sleepy','Mmm. Soft thoughts only now.']];
+const TONE_PATTERNS=[
+ ['sad',/sad|unhappy|depress|down today|crying|cry|hurt|heartbroken|miss (him|her|them)|bad day|rough day|worst day|terrible|awful|upset|disappoint|failed|failure|grief|not okay|not ok/g],
+ ['lonely',/lonely|alone|nobody|no one (cares|likes|understands)|no friends/g],
+ ['angry',/angry|mad at|furious|annoyed|annoying|hate|irritated|fed up|so unfair|sick of/g],
+ ['anxious',/anxious|worried|worry|nervous|scared|afraid|stress|panic|overwhelmed|cannot sleep|can't sleep|exam tomorrow/g],
+ ['tired',/tired|sleepy|exhausted|bedtime|goodnight|good night|yawn|so sleepy/g],
+ ['excited',/excited|amazing|awesome|got the job|i passed|i won|promotion|yay|can't wait|best day|celebrate|great news|good news/g],
+ ['loving',/love you|miss you|best friend|you are the best|appreciate you|thank you so much/g],
+ ['playful',/joke|funny|lol|haha|silly|prank/g],
+ ['happy',/happy|great|good morning|wonderful|glad|thanks|thank you|nice/g],
+ ['curious',/what is|what's|why |how do|how does|who is|tell me|explain|\?/g]];
+const TONE_FACE={sad:'sad',lonely:'sad',angry:'pout',anxious:'shy',tired:'sleepy',excited:'excited',loving:'love',playful:'silly',happy:'happy',curious:'curious',neutral:'happy'};
+const NEGATIVE=['sad','lonely','angry','anxious'],CHEERFUL=['happy','excited','wink','joy','silly','starry','love'];
+function found(re,t){re.lastIndex=0;let m;while((m=re.exec(t))){if(!/(not|never|no|n't) $/.test(t.slice(Math.max(0,m.index-6),m.index)))return true}return false}
+function detectTone(q){const t=q.toLowerCase();for(const [tone,re] of TONE_PATTERNS)if(found(re,t))return tone;return (t.match(/!/g)||[]).length>=2?'excited':'neutral'}
+function faceFor(tone,q,e){if(tone==='sad'&&/crying|heartbroken|devastated|breaking down|want to cry|i cried/.test(q.toLowerCase()))return 'cry';
+  if(EMOS.includes(e)&&!(NEGATIVE.includes(tone)&&CHEERFUL.includes(e)))return e;return TONE_FACE[tone]||'happy'}
 function brain(q){
   const s=q.toLowerCase();
   const mm=s.match(/\b(buddy|study|mood|sleep) mode\b/);
-  if(mm){S.mode=['buddy','study','mood','sleep'].indexOf(mm[1]);refreshUI();return{emotion:'excited',text:'Okay! '+MODES[S.mode]+' mode on.'}}
-  for(const [re,e,t] of RULES)if(re.test(s))return{emotion:e,text:t};
-  const f=FALLBACK[S.mode];return{emotion:f[0],text:f[1]};
+  if(mm){S.mode=['buddy','study','mood','sleep'].indexOf(mm[1]);refreshUI();return{emotion:'excited',text:'Okay! '+MODES[S.mode]+' mode on.',tone:'neutral'}}
+  const tone=detectTone(q);
+  for(const [re,e,t] of RULES)if(found(new RegExp(re.source,'g'),s))return{emotion:faceFor(tone,q,e),text:t,tone};
+  const f=FALLBACK[S.mode];return{emotion:tone==='neutral'?f[0]:faceFor(tone,q),text:f[1],tone};
 }
 
 /* ---------- the full talk path ---------- */
@@ -569,7 +606,8 @@ async function converse(text){
   stage('llm',true);const r=brain(text);await sleep(900);stage('llm',false);log(JSON.stringify(r),'t');
   stage('tts',true);await sleep(700);stage('tts',false);
   stage('down',true);await sleep(300);stage('down',false);
-  log('HTTP 200  X-Emotion: '+r.emotion,'ok');
+  log('You sounded '+(r.tone||'neutral')+'. Pip shows '+r.emotion,'ok');
+  log('HTTP 200  X-Tone: '+(r.tone||'neutral')+'  X-Emotion: '+r.emotion,'ok');
   const dur=Math.max(1200,r.text.length*62);
   S.emo=r.emotion;S.talking=true;waveMode='spk';$('#ledspk').classList.add('on');stage('amp',true);stage('oled',true);
   log('playing reply: "'+r.text+'"','ok');

@@ -78,11 +78,64 @@ MODE_PROMPTS = [
     "You are Pip in Mood mode: an empathetic pet. React warmly to the user's feelings and ask a gentle follow-up.",
     "You are Pip in Sleep mode: a sleepy bedtime bot. Speak softly, keep it very short, help the user wind down.",
 ]
+# ---------- tone of the user's message ----------
+# A quick keyword check works with no LLM at all. The LLM also judges the tone and can correct it.
+TONES = ["sad", "lonely", "angry", "anxious", "tired", "excited", "loving", "playful", "happy", "curious", "neutral"]
+TONE_PATTERNS = [  # checked in this order, so feelings that need care win over cheerful words
+    ("sad", r"sad|unhappy|depress|down today|crying|cry|hurt|heartbroken|miss (him|her|them)|bad day|rough day|worst day|terrible|awful|upset|disappoint|failed|failure|grief|not okay|not ok"),
+    ("lonely", r"lonely|alone|nobody|no one (cares|likes|understands)|no friends"),
+    ("angry", r"angry|mad at|furious|annoyed|annoying|hate|irritated|fed up|so unfair|sick of"),
+    ("anxious", r"anxious|worried|worry|nervous|scared|afraid|stress|panic|overwhelmed|cannot sleep|can't sleep|exam tomorrow"),
+    ("tired", r"tired|sleepy|exhausted|bedtime|goodnight|good night|yawn|so sleepy"),
+    ("excited", r"excited|amazing|awesome|got the job|i passed|i won|promotion|yay|can't wait|best day|celebrate|great news|good news"),
+    ("loving", r"love you|miss you|best friend|you are the best|appreciate you|thank you so much"),
+    ("playful", r"joke|funny|lol|haha|silly|prank"),
+    ("happy", r"happy|great|good morning|wonderful|glad|thanks|thank you|nice"),
+    ("curious", r"what is|what's|why |how do|how does|who is|tell me|explain|\?"),
+]
+# How Pip shows it has understood: it mirrors the feeling with a caring face.
+TONE_TO_EMOTION = {"sad": "sad", "lonely": "sad", "angry": "pout", "anxious": "shy", "tired": "sleepy", "excited": "excited",
+                   "loving": "love", "playful": "silly", "happy": "happy", "curious": "curious", "neutral": "happy"}
+NEGATIVE_TONES = {"sad", "lonely", "angry", "anxious"}
+CHEERFUL_FACES = {"happy", "excited", "wink", "joy", "silly", "starry", "love"}   # wrong face for someone who is hurting
+VERY_SAD = r"crying|heartbroken|devastated|breaking down|want to cry|i cried"
+
+
+def found(pattern: str, t: str) -> bool:
+    """True if the pattern matches and is not negated ("I am not sad" does not count as sad)."""
+    for m in re.finditer(pattern, t):
+        if not re.search(r"(not|never|no|n't) $", t[max(0, m.start() - 6): m.start()]):
+            return True
+    return False
+
+
+def detect_tone(text: str) -> str:
+    t = text.lower()
+    for tone, pattern in TONE_PATTERNS:
+        if found(pattern, t):
+            return tone
+    if t.count("!") >= 2:
+        return "excited"
+    return "neutral"
+
+
+def face_for(tone: str, text: str, llm_emotion: str = "") -> str:
+    """Pick the final face. The LLM's choice is kept unless it clashes with the user's feelings."""
+    if tone == "sad" and re.search(VERY_SAD, text.lower()):
+        return "cry"
+    if llm_emotion in EMOTIONS and not (tone in NEGATIVE_TONES and llm_emotion in CHEERFUL_FACES):
+        return llm_emotion
+    return TONE_TO_EMOTION.get(tone, "happy")
+
+
 RULES = (
     " You live inside a tiny robot with an OLED face and a speaker, so your words are spoken aloud. "
-    "Reply with ONLY a JSON object: {\"emotion\": \"<one of: " + ", ".join(EMOTIONS) + ">\", "
+    "First judge the tone of the user's last message: " + ", ".join(TONES) + ". "
+    "Then show you understand it with your face: sad or lonely -> sad (or cry if they are very upset), angry -> pout, "
+    "anxious -> shy, tired -> sleepy, excited -> excited, loving -> love, playful -> silly. Never use a cheerful face for someone who is hurting. "
+    "Reply with ONLY a JSON object: {\"tone\": \"<one of those tones>\", \"emotion\": \"<one of: " + ", ".join(EMOTIONS) + ">\", "
     "\"text\": \"<what you say>\"}. The text must be 1 or 2 short sentences, under 160 characters, "
-    "plain words with no emojis, no markdown. Pick the emotion that matches your reply."
+    "plain words with no emojis, no markdown. Comfort first when the user is sad, anxious or angry."
 )
 
 state = {"mode": 0, "history": [], "log": [], "warned": False, "provider": "-"}
@@ -158,11 +211,14 @@ OFFLINE_FALLBACK = [("happy", "Ask me anything. I am all ears!"), ("thinking", "
 def offline_reply(text: str) -> dict:
     """Simple built-in replies, used when the LLM is unavailable."""
     t = text.lower()
+    tone = detect_tone(text)
     for pattern, emotion, reply in OFFLINE_RULES:
-        if re.search(pattern, t):
-            return {"emotion": emotion, "text": reply}
+        if found(pattern, t):
+            return {"emotion": face_for(tone, text, emotion), "text": reply, "tone": tone}
     emotion, reply = OFFLINE_FALLBACK[state["mode"]]
-    return {"emotion": emotion, "text": reply}
+    if tone == "neutral":
+        return {"emotion": emotion, "text": reply, "tone": tone}
+    return {"emotion": face_for(tone, text), "text": reply, "tone": tone}
 
 
 def call_one(name: str, system: str, messages: list) -> str:
@@ -216,11 +272,16 @@ def think(text: str) -> dict:
     state["warned"] = False
     try:
         data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-        reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip(), "provider": provider}
+        reply = {"emotion": str(data.get("emotion", "happy")).lower(), "text": str(data.get("text", "")).strip(),
+                 "tone": str(data.get("tone", "")).lower(), "provider": provider}
     except Exception:
-        reply = {"emotion": "happy", "text": raw.strip()[:160], "provider": provider}
-    if reply["emotion"] not in EMOTIONS:
-        reply["emotion"] = "happy"
+        reply = {"emotion": "", "text": raw.strip()[:160], "tone": "", "provider": provider}
+    keyword_tone = detect_tone(text)
+    if reply["tone"] not in TONES:
+        reply["tone"] = keyword_tone
+    elif reply["tone"] == "neutral" and keyword_tone in NEGATIVE_TONES:   # the keyword check caught a hurt the LLM missed
+        reply["tone"] = keyword_tone
+    reply["emotion"] = face_for(reply["tone"], text, reply["emotion"])
     if not reply["text"]:
         reply["text"] = "Hmm, I got a little lost."
     state["history"] += [{"role": "user", "content": text}, {"role": "assistant", "content": raw}]
@@ -251,7 +312,7 @@ def to_wav(pcm: bytes) -> bytes:
 
 def record(user: str, reply: dict):
     state["log"] = (state["log"] + [{"user": user, "emotion": reply["emotion"], "bot": reply["text"]}])[-30:]
-    print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you: {user!r} -> {reply['emotion']}: {reply['text']!r}")
+    print(f"[{MODES[state['mode']]} · {reply.get('provider', '-')}] you ({reply.get('tone', '-')}): {user!r} -> {reply['emotion']}: {reply['text']!r}")
 
 
 async def respond(text: str) -> dict:
@@ -280,6 +341,7 @@ async def talk(request: Request):
         "X-Text": reply["text"].encode("ascii", "ignore").decode()[:200],
         "X-Mode": MODES[state["mode"]],
         "X-Provider": reply.get("provider", "-"),
+        "X-Tone": reply.get("tone", "neutral"),
     }
     return Response(audio, media_type="application/octet-stream", headers=headers)
 
@@ -318,7 +380,7 @@ async function load(){const s=await (await fetch('/api/state')).json();
  log.innerHTML=s.log.slice().reverse().map(e=>'<p><b>You:</b> '+e.user+'<br><b>Pip ('+e.emotion+'):</b> '+e.bot+'</p>').join('')}
 async function ask(t){if(!t.trim())return;st.textContent='thinking...';
  const r=await (await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:t})})).json();
- const a=new Audio('data:audio/wav;base64,'+r.audio);st.textContent='Pip ('+r.emotion+', via '+(r.provider||'-')+'): '+r.text;
+ const a=new Audio('data:audio/wav;base64,'+r.audio);st.textContent='You sounded '+(r.tone||'neutral')+'. Pip ('+r.emotion+', via '+(r.provider||'-')+'): '+r.text;
  a.onended=()=>{if(conv.checked)listen()};a.play();load()}
 function send(e){e.preventDefault();const t=q.value;q.value='';ask(t)}
 function listen(){const R=window.SpeechRecognition||window.webkitSpeechRecognition;
