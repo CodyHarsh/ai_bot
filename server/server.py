@@ -724,6 +724,29 @@ async def set_mode(m: int = 0):
     return {"mode": MODES[state["mode"]]}
 
 
+_last = {"pcm": b""}
+
+
+@app.post("/api/transcribe")  # microphone test: words only, no LLM and no voice
+async def api_transcribe(request: Request):
+    pcm = await request.body()
+    _last["pcm"] = pcm
+    mic = levels(pcm)
+    t0 = time.time()
+    text = await transcribe(pcm)
+    log_stt.info("🎤 MIC TEST HEARD: \"%s\"  [%s] (%d ms of audio, level %s%% avg, %s%% peak, %d ms)", text or "(nothing)", state.get("stt_used", "?"), mic["ms"], mic["rms"], mic["peak"], int((time.time() - t0) * 1000))
+    if mic["peak"] >= 98:
+        log_stt.warning("the recording is saturated (peak %s%%): the microphone wiring is wrong, or the gain is too high", mic["peak"])
+    return {"text": text.replace('"', "'"), "engine": state.get("stt_used", "?"), "mic": mic}
+
+
+@app.get("/api/last.wav")  # the last microphone test recording, so you can listen to what the mic really captured
+async def last_wav():
+    if not _last["pcm"]:
+        return PlainTextResponse("no recording yet: press r in the mic test sketch first\n", status_code=404)
+    return Response(to_wav(_last["pcm"]), media_type="audio/wav")
+
+
 @app.post("/api/chat")  # used by the test page below, no ESP32 needed
 async def chat(request: Request):
     body = await request.json()

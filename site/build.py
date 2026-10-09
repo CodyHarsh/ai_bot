@@ -7,6 +7,7 @@ files = {
     "__F_MIC__": "firmware/test_mic/test_mic.ino",
     "__F_SPK__": "firmware/test_speaker/test_speaker.ino",
     "__F_SPV__": "firmware/speaker_voice_test/speaker_voice_test.ino",
+    "__F_MTT__": "firmware/mic_transcribe_test/mic_transcribe_test.ino",
     "__F_SERVER__": "server/server.py",
     "__F_REQ__": "server/requirements.txt",
     "__F_DASH__": "server/dashboard.html",

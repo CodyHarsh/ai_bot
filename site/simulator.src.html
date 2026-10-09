@@ -347,6 +347,7 @@ svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
     <template id="f-mic">__F_MIC__</template>
     <template id="f-spk">__F_SPK__</template>
     <template id="f-spv">__F_SPV__</template>
+    <template id="f-mtt">__F_MTT__</template>
     <template id="f-server">__F_SERVER__</template>
     <template id="f-req">__F_REQ__</template>
     <template id="f-dash">__F_DASH__</template>
@@ -913,7 +914,7 @@ const TESTS=[
 })();
 
 /* ---------- code viewer ---------- */
-const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['speaker_voice_test.ino','f-spv','firmware/speaker_voice_test/speaker_voice_test.ino','Speaker-only test that SAYS "Hello! I am Pip" (voice built in, no WiFi needed)'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page with live logs (put it next to server.py). Open http://localhost:8000/dashboard']];
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware, ONE complete file: full bot plus face, mic and speaker tests (RUN_MODE)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['mic_transcribe_test.ino','f-mtt','firmware/mic_transcribe_test/mic_transcribe_test.ino','Mic-only test: records 5 s, prints the words you said, and lets you listen to the recording'],['speaker_voice_test.ino','f-spv','firmware/speaker_voice_test/speaker_voice_test.ino','Speaker-only test that SAYS "Hello! I am Pip" (voice built in, no WiFi needed)'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server'],['dashboard.html','f-dash','server/dashboard.html','Live dashboard page with live logs (put it next to server.py). Open http://localhost:8000/dashboard']];
 let cur=0;
 function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
 FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});
