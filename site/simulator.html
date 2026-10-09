@@ -407,6 +407,13 @@ const int   SERVER_PORT = 8000;
 Adafruit_SSD1306 display(128, 64, &amp;Wire, -1);
 I2SClass i2s;
 
+// ---- types (kept above every function so the Arduino auto-prototypes can see them) ----
+enum LedMode { LED_BOOT, LED_IDLE, LED_REC, LED_THINK, LED_SPEAK, LED_ERROR, LED_MUTED };
+enum Emotion { HAPPY, EXCITED, LOVE, WINK, JOY, SILLY, SLEEPY, SAD, CRY, POUT,
+               SURPRISED, THINKING, LISTENING, SHY, STARRY, CURIOUS, EMO_COUNT };
+enum Mouth { M_SMILE, M_CAT, M_D, M_FROWN, M_O, M_SMALLO, M_FLAT, M_WAVY, M_TONGUE, M_WAIL, M_PUFF };
+struct Chan { long n = 0, zeros = 0; int32_t mn = INT32_MAX, mx = INT32_MIN; double sum = 0, sq = 0; };
+
 // ================= logging =================
 // Every module writes tagged lines like:  [  12345] INFO MIC   calibrated: ...
 //   tags: BOOT OLED WIFI NET I2S MIC VAD PLAY CMD LIVE DIAG.  Lines go to the Serial Monitor and, when the
@@ -434,7 +441,6 @@ void logLine(const char* lvl, const char* tag, const char* fmt, ...) {
 //   very fast blinking ..... speaking
 //   three blinks, pause .... something is wrong (read the log)
 //   tiny blip every 3 s .... muted
-enum LedMode { LED_BOOT, LED_IDLE, LED_REC, LED_THINK, LED_SPEAK, LED_ERROR, LED_MUTED };
 LedMode ledMode = LED_BOOT;
 void ledSet(LedMode m) { ledMode = m; }
 void ledUpdate() {
@@ -467,8 +473,6 @@ const char* resetReasonText() {
 }
 
 // ---------- emotions ----------
-enum Emotion { HAPPY, EXCITED, LOVE, WINK, JOY, SILLY, SLEEPY, SAD, CRY, POUT,
-               SURPRISED, THINKING, LISTENING, SHY, STARRY, CURIOUS, EMO_COUNT };
 const char* EMO_NAMES[EMO_COUNT] = {"happy", "excited", "love", "wink", "joy", "silly", "sleepy", "sad",
                                     "cry", "pout", "surprised", "thinking", "listening", "shy", "starry", "curious"};
 
@@ -545,7 +549,6 @@ void blush(int lvl) {
         }
 }
 
-enum Mouth { M_SMILE, M_CAT, M_D, M_FROWN, M_O, M_SMALLO, M_FLAT, M_WAVY, M_TONGUE, M_WAIL, M_PUFF };
 void mouth(int m) {
   switch (m) {
     case M_SMILE:  arc(64, 40, 9, 225, 315, 2); break;
@@ -1101,7 +1104,6 @@ void check(bool ok, const char* name, const char* detail) {
   if (!ok) diagFails++;
 }
 
-struct Chan { long n = 0, zeros = 0; int32_t mn = INT32_MAX, mx = INT32_MIN; double sum = 0, sq = 0; };
 void chanAdd(Chan&amp; c, int32_t raw) {
   int32_t v = raw &gt;&gt; 8;                       // the mic sends 24-bit samples in the top of a 32-bit slot
   c.n++;
