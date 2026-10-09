@@ -1,0 +1,589 @@
+<title>Pip AI Bot Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+/* Layout: bench-style app. Header, tab bar, one panel at a time. Simulator = device left, controls right, pipeline strip underneath. */
+:root{
+  --bg:#f3f5f2; --panel:#ffffff; --ink:#15201c; --muted:#5a6a63; --line:#d5ddd8;
+  --oled:#0a8fb0; --oled-bg:#04100f; --accent:#d9730d; --good:#1b8a4b; --warn:#b4540a; --code:#eef2ef; --stage:#e7ede9;
+  --display:'Bricolage Grotesque','Segoe UI',sans-serif; --body:'IBM Plex Sans','Segoe UI',sans-serif; --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c1310; --panel:#131d19; --ink:#e4eee9; --muted:#8fa39a; --line:#26342e;
+  --oled:#79e7ff; --oled-bg:#020807; --accent:#ffb347; --good:#4fd18b; --warn:#ffb347; --code:#0a110e; --stage:#1a2822; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c1310; --panel:#131d19; --ink:#e4eee9; --muted:#8fa39a; --line:#26342e;
+  --oled:#79e7ff; --oled-bg:#020807; --accent:#ffb347; --good:#4fd18b; --warn:#ffb347; --code:#0a110e; --stage:#1a2822; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);margin:0;padding-inline:16px;padding-block:20px}
+.wrap{max-width:1100px;margin:auto}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
+h1{font-size:clamp(26px,5vw,38px);letter-spacing:-.02em}
+h2{font-size:22px;margin-bottom:10px}
+h3{font-size:16px;margin-bottom:6px}
+.sub{color:var(--muted);margin:6px 0 18px;max-width:72ch}
+.note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);padding:10px 14px;border-radius:6px;font-size:13.5px;color:var(--muted);margin-bottom:18px}
+.note b{color:var(--ink)}
+nav{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-bottom:20px}
+nav button{font:500 14px var(--body);background:none;border:0;color:var(--muted);padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px}
+@media(max-width:820px){.grid{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.board{background:#0f5a43;border-radius:10px;padding:16px;border:1px solid #0a3d2e;box-shadow:inset 0 0 0 2px #14705a}
+.bezel{background:#000;border-radius:6px;padding:10px;border:2px solid #222}
+canvas{display:block;width:100%;height:auto;image-rendering:pixelated;background:var(--oled-bg);border-radius:3px}
+.hw{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:14px;color:#cfeee2;font:11px var(--mono)}
+.led{display:inline-flex;gap:6px;align-items:center}
+.led i{width:9px;height:9px;border-radius:50%;background:#2c4a3f;display:inline-block}
+.led i.on{background:#6bffa8;box-shadow:0 0 8px #6bffa8}
+.led i.mic.on{background:#ff7a7a;box-shadow:0 0 8px #ff7a7a}
+.led i.spk.on{background:#ffcf5a;box-shadow:0 0 8px #ffcf5a}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.chip{font:500 13px var(--body);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);color:#1a1005;border-color:var(--accent)}
+.lbl{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 6px}
+.row{display:flex;gap:8px}
+input[type=text]{flex:1;min-width:0;font:15px var(--body);padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.go{font:500 14px var(--body);background:var(--accent);color:#1a1005;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+.go:disabled{opacity:.5;cursor:wait}
+.log{background:var(--code);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--mono);height:230px;overflow:auto;padding:10px;white-space:pre-wrap;word-break:break-word}
+.log .t{color:var(--muted)}.log .ok{color:var(--good)}.log .me{color:var(--accent)}
+.pipe{display:flex;gap:6px;flex-wrap:wrap;align-items:stretch;margin-top:16px}
+.stage{flex:1 1 90px;min-width:84px;background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12px var(--mono);transition:background .15s,border-color .15s}
+.stage small{display:block;color:var(--muted);font-size:10.5px}
+.stage.on{background:var(--accent);border-color:var(--accent);color:#1a1005}
+.stage.on small{color:#3b2208}
+.stage.done{border-color:var(--good)}
+pre.code{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto;font:12.5px/1.5 var(--mono);max-height:560px;margin:0;tab-size:2}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+td code,li code,p code{font:12.5px var(--mono);background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.phase{margin:26px 0 10px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.phase span{font:500 12px var(--mono);color:var(--muted)}
+.steps{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.steps li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px}
+.steps input{width:20px;height:20px;margin-top:2px;accent-color:var(--accent)}
+.steps li.done{opacity:.55}
+.steps p{margin:3px 0 0}
+.steps ul{margin:6px 0 0;padding-left:18px}
+.steps pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:12px var(--mono);overflow:auto;margin:6px 0 0}
+.btn2{font:500 13px var(--body);background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+details{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:8px}
+summary{cursor:pointer;font-weight:500}
+svg text{font-family:var(--mono);font-size:12px;fill:var(--ink)}
+svg .dim{fill:var(--muted);font-size:11px}
+svg .wire{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.gal .card{padding:10px}
+.gal .bezel{padding:6px}
+.gal h3{margin-top:8px;font-size:15px}
+.gal p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <h1>Pip, the talking AI bot</h1>
+  <p class="sub">ESP32 with a microphone, speaker and a cute OLED face. You talk, an LLM answers out loud, and the face shows how Pip feels.</p>
+  <div class="note"><b>Built from your Cirkit settings.</b> INMP441 mic, MAX98357A amp + speaker and the I2C OLED on SCK=GPIO19 / SDA=GPIO21, with the I2S clock on GPIO14 and GPIO25, mic data on GPIO33 and amp data on GPIO22. Your saved sketch only drew the face. The firmware here also records, talks to the server and plays the reply.</div>
+
+  <nav role="tablist" id="tabs">
+    <button role="tab" data-t="sim" aria-selected="true">Simulator</button>
+    <button role="tab" data-t="emo" aria-selected="false">Emotions</button>
+    <button role="tab" data-t="wire" aria-selected="false">Wiring</button>
+    <button role="tab" data-t="steps" aria-selected="false">Build steps</button>
+    <button role="tab" data-t="code" aria-selected="false">Code</button>
+    <button role="tab" data-t="llm" aria-selected="false">How the AI works</button>
+  </nav>
+
+  <!-- SIMULATOR -->
+  <section id="p-sim">
+    <div class="grid">
+      <div class="board">
+        <div class="bezel"><canvas id="oled" width="640" height="320" aria-label="Simulated 128 by 64 OLED screen"></canvas></div>
+        <div class="bezel" style="margin-top:10px;padding:6px"><canvas id="wave" width="640" height="56" style="height:56px" aria-label="Audio level"></canvas></div>
+        <div class="hw">
+          <span class="led"><i id="ledwifi"></i>WiFi</span>
+          <span class="led"><i class="mic" id="ledmic"></i>INMP441 mic</span>
+          <span class="led"><i class="spk" id="ledspk"></i>MAX98357A speaker</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="lbl" style="margin-top:0">Mode (changes the bot's personality)</div>
+        <div class="chips" id="modes"></div>
+        <div class="lbl">Say something to Pip</div>
+        <form class="row" id="f"><input type="text" id="q" value="Tell me a fun fact" autocomplete="off" aria-label="What you say to the bot"><button class="go" id="talk" type="submit">Talk</button></form>
+        <div class="chips" style="margin-top:8px" id="quick"></div>
+        <label style="font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center"><input type="checkbox" id="tts"> Speak replies through this browser (cute voice)</label>
+        <div class="lbl">Serial monitor (115200)</div>
+        <div class="log" id="log" aria-live="polite"></div>
+      </div>
+    </div>
+    <div class="pipe" id="pipe" aria-label="Audio pipeline"></div>
+    <p class="sub" style="margin-top:14px">Pressing Talk plays the whole path: the mic hears you, the ESP32 streams audio to the server, the server turns speech into text, asks the LLM, turns the answer into a voice, and the ESP32 plays it while the mouth moves. Replies in this simulator come from a small built-in rule set so it works offline.</p>
+  </section>
+
+  <!-- EMOTIONS -->
+  <section id="p-emo" hidden>
+    <h2>16 emotions</h2>
+    <p class="sub">Every face has glossy eyes, rosy cheeks or a small sparkle, and a gentle bob and blink. The LLM picks one with each reply. You can step through them in the real firmware with the serial commands <code>n</code> and <code>p</code>.</p>
+    <div class="gal" id="gal"></div>
+  </section>
+
+  <!-- WIRING -->
+  <section id="p-wire" hidden>
+    <h2>Wiring</h2>
+    <div class="card scroll"><svg id="wsvg" viewBox="0 0 900 650" width="900" role="img" aria-label="Wiring diagram" style="max-width:none"></svg></div>
+    <div class="card scroll" style="margin-top:16px">
+      <table>
+        <thead><tr><th>From</th><th>To</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>ESP32 <code>5V</code></td><td>MAX98357A <code>VIN</code></td><td>Amplifier power. Only present when the ESP32 is powered over USB.</td></tr>
+          <tr><td>ESP32 <code>3V3</code></td><td>INMP441 <code>VDD</code>, OLED <code>VDD</code></td><td>Mic and display power.</td></tr>
+          <tr><td>ESP32 <code>GND</code></td><td>MAX98357A, INMP441, OLED <code>GND</code></td><td>Common ground.</td></tr>
+          <tr><td>ESP32 <code>GPIO14</code></td><td>INMP441 <code>SCK</code>, MAX98357A <code>BCLK</code></td><td>Shared I2S bit clock.</td></tr>
+          <tr><td>ESP32 <code>GPIO25</code></td><td>INMP441 <code>WS</code>, MAX98357A <code>LRC</code></td><td>Shared I2S word select.</td></tr>
+          <tr><td>INMP441 <code>SD</code></td><td>ESP32 <code>GPIO33</code></td><td>Microphone audio into the ESP32.</td></tr>
+          <tr><td>ESP32 <code>GPIO22</code></td><td>MAX98357A <code>DIN</code></td><td>Audio out to the amplifier.</td></tr>
+          <tr><td>INMP441 <code>L/R</code></td><td><code>GND</code></td><td>Puts the mic on the left channel (the firmware reads the left channel).</td></tr>
+          <tr><td>OLED <code>SCK</code></td><td>ESP32 <code>GPIO19</code></td><td>I2C clock (called SCL in code).</td></tr>
+          <tr><td>OLED <code>SDA</code></td><td>ESP32 <code>GPIO21</code></td><td>I2C data.</td></tr>
+          <tr><td>MAX98357A <code>VO+</code> / <code>VO−</code></td><td>Speaker <code>+</code> / <code>−</code></td><td>Differential output. Never connect either one to GND.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:12px">Leave the MAX98357A <code>SD</code> and <code>GAIN</code> pins unconnected. Silkscreen order on the modules differs between sellers, so match pin names, not positions. Power the ESP32 over USB while testing.</p>
+  </section>
+
+  <!-- STEPS -->
+  <section id="p-steps" hidden>
+    <h2>Build it from zero</h2>
+    <p class="sub">Every small step, in order. Each phase ends with a test, so you always know which part is broken. Ticks are saved in this browser.</p>
+    <div id="phases"></div>
+    <h2 style="margin-top:34px">If something goes wrong</h2>
+    <div id="trouble"></div>
+  </section>
+
+  <!-- CODE -->
+  <section id="p-code" hidden>
+    <h2>Code</h2>
+    <p class="sub">All files are in the repo under <code>firmware/</code> and <code>server/</code>.</p>
+    <div class="chips" id="files"></div>
+    <div class="row" style="margin-bottom:10px"><button class="btn2" id="copy">Copy this file</button><span id="copied" class="sub" style="margin:0;align-self:center"></span></div>
+    <div id="where" class="sub" style="margin:0 0 8px"></div>
+    <pre class="code" id="src"></pre>
+    <template id="f-main">__F_MAIN__</template>
+    <template id="f-mic">__F_MIC__</template>
+    <template id="f-spk">__F_SPK__</template>
+    <template id="f-server">__F_SERVER__</template>
+    <template id="f-req">__F_REQ__</template>
+  </section>
+
+  <!-- LLM -->
+  <section id="p-llm" hidden>
+    <h2>How the AI works</h2>
+    <p class="sub">An ESP32 cannot run speech recognition or a language model, and it does not need to. It records your voice, a small Python server on your laptop does the thinking, and the ESP32 plays the answer. No API key is stored on the device.</p>
+    <div class="card" style="margin-bottom:16px">
+      <pre class="mermaid">
+flowchart LR
+  M[INMP441 mic] --> E[ESP32<br/>voice detection]
+  E -->|WiFi: raw audio| S1[Server: Whisper<br/>speech to text]
+  S1 --> L[Claude<br/>emotion + reply]
+  L --> T[edge-tts<br/>cute voice]
+  T -->|WiFi: raw audio| E2[ESP32 playback]
+  E2 --> A[MAX98357A + speaker]
+  E2 --> O[OLED emotion face]
+      </pre>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3>What each piece does</h3>
+        <ul>
+          <li><b>Voice detection (ESP32):</b> it listens for sound above the room's noise, records until you pause, and streams the audio as it goes, so no big memory buffer is needed.</li>
+          <li><b>Speech to text:</b> faster-whisper runs on the laptop CPU. Use <code>tiny.en</code> for speed, <code>small.en</code> for accuracy.</li>
+          <li><b>LLM:</b> Claude Haiku answers in a fixed JSON shape: an emotion and 1 to 2 short sentences.</li>
+          <li><b>Text to speech:</b> edge-tts with the child-like <code>en-US-AnaNeural</code> voice, converted to 16 kHz audio by ffmpeg.</li>
+          <li><b>Playback:</b> the ESP32 streams the reply into the amplifier while the mouth moves with the loudness.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Modes</h3>
+        <ul>
+          <li><b>Buddy:</b> cheerful chat and fun facts.</li>
+          <li><b>Study:</b> calm coach, one practical tip.</li>
+          <li><b>Mood:</b> empathetic pet that reacts to feelings.</li>
+          <li><b>Sleep:</b> soft bedtime talk.</li>
+        </ul>
+        <p>Switch by saying "study mode" (or buddy, mood, sleep), from the server page at <code>http://localhost:8000</code>, or with the serial keys <code>1</code> to <code>4</code>.</p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Reply format the LLM must follow</h3>
+      <pre class="code">{"emotion": "happy|excited|love|wink|joy|silly|sleepy|sad|cry|pout|surprised|thinking|shy|starry|curious",
+ "text": "1 or 2 short sentences, under 160 characters"}</pre>
+      <p>The server sends the text as speech and the emotion name in the <code>X-Emotion</code> header, and the ESP32 draws that face.</p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Costs and swaps</h3>
+      <ul>
+        <li>Whisper and edge-tts are free. The only paid piece is the Claude API, a few cents for a whole demo with Haiku.</li>
+        <li>No internet at the venue? Use a phone hotspot for both the laptop and the ESP32.</li>
+        <li>Want another LLM? Only the <code>think()</code> function in <code>server.py</code> changes.</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const EMOS=['happy','excited','love','wink','joy','silly','sleepy','sad','cry','pout','surprised','thinking','listening','shy','starry','curious'];
+const EMO_INFO={happy:'Default. Glossy eyes, cat smile.',excited:'Big news. Sparkles and an open smile.',love:'Heart eyes that pulse.',wink:'Playful. One happy eye.',joy:'Closed happy eyes, big grin.',silly:'Tongue out, squinty eyes.',sleepy:'Idle for a minute. Zzz.',sad:'Teary eyes and a small tear.',cry:'Streaming tears and a wail.',pout:'Puffed cheeks and an anger mark.',surprised:'Wide eyes, little o mouth.',thinking:'Looks up, dots while waiting.',listening:'Sound waves while you speak.',shy:'Looks away, heavy blush.',starry:'Star eyes. Impressed.',curious:'One big eye and a question mark.'};
+const MODES=['Buddy','Study','Mood','Sleep'];
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));
+  ['sim','emo','wire','steps','code','llm'].forEach(t=>$('#p-'+t).hidden=t!==b.dataset.t);
+});
+try{ if(window.mermaid) mermaid.initialize({startOnLoad:true,theme:'neutral'}); }catch(e){}
+
+/* ---------- OLED renderer: same shapes as the Adafruit_GFX calls in ai_bot.ino ---------- */
+const off=document.createElement('canvas');off.width=128;off.height=64;
+const g=off.getContext('2d',{willReadFrequently:true});
+const W='#fff',K='#000',D2R=Math.PI/180;
+let yo=0,doBlink=false;
+function fc(x,y,r,c=W){g.fillStyle=c;g.beginPath();g.arc(x,y+yo,r,0,7);g.fill()}
+function dc(x,y,r){g.strokeStyle=W;g.lineWidth=1;g.beginPath();g.arc(x,y+yo,r,0,7);g.stroke()}
+function rr(x,y,w,h,r,c=W){g.fillStyle=c;g.beginPath();g.roundRect(x,y+yo,w,h,Math.min(r,h/2,w/2));g.fill()}
+function ln(x0,y0,x1,y1,t=2){g.strokeStyle=W;g.lineWidth=t;g.lineCap='butt';g.beginPath();g.moveTo(x0,y0+yo+t/2);g.lineTo(x1,y1+yo+t/2);g.stroke()}
+function tri(a,b,c2,d,e,f,c=W){g.fillStyle=c;g.beginPath();g.moveTo(a,b+yo);g.lineTo(c2,d+yo);g.lineTo(e,f+yo);g.fill()}
+function arc(cx,cy,r,a0,a1,t){for(let a=a0;a<=a1;a+=3){const x=Math.round(cx+r*Math.cos(a*D2R)),y=Math.round(cy-r*Math.sin(a*D2R));if(t<=1){g.fillStyle=W;g.fillRect(x,y+yo,1,1)}else fc(x,y,t/2)}}
+function gl(cx,cy,r,ir,px,py){
+  if(doBlink){rr(cx-r+2,cy,2*r-4,3,1);return}
+  fc(cx,cy,r);
+  if(ir<8){fc(cx+px,cy+py,ir,K);fc(cx+px-2,cy+py-2,2,W);return}
+  fc(cx+Math.trunc(px/2)-Math.trunc(r/3),cy+Math.trunc(py/2)-Math.trunc(r/3),Math.max(2,Math.trunc(ir/2)-1),K);
+  fc(cx+Math.trunc(px/2)+Math.trunc(r/3),cy+Math.trunc(py/2)+Math.trunc(r/3),1,K);
+}
+function heart(cx,cy,s){fc(cx-s,cy-s/2,s+1);fc(cx+s,cy-s/2,s+1);tri(cx-2*s-1,cy-s/4,cx+2*s+1,cy-s/4,cx,cy+2*s+1)}
+function star(cx,cy,R,r){const p=[];for(let k=0;k<8;k++){const a=(90+45*k)*D2R,rad=k%2?r:R;p.push([cx+rad*Math.cos(a),cy-rad*Math.sin(a)])}
+  for(let k=0;k<8;k++){const n=p[(k+1)%8];tri(cx,cy,p[k][0],p[k][1],n[0],n[1])}}
+function sparkle(x,y,s){ln(x-s,y,x+s,y,1);g.fillStyle=W;g.fillRect(x,y-s+yo,1,2*s+1)}
+function blush(l){if(!l)return;g.fillStyle=W;for(const cx of[15,113])for(let dy=-5;dy<=5;dy++)for(let dx=-9;dx<=9;dx++)
+  if(dx*dx*25+dy*dy*81<=2025){const on=l===1?((dx+dy)&1)===0:(((dx+dy)&1)===0||(dy&1)===0);if(on)g.fillRect(cx+dx,43+dy+yo,1,1)}}
+function mouth(m){switch(m){
+  case 'smile':arc(64,40,9,225,315,2);break;
+  case 'cat':arc(59,45,4,180,360,2);arc(69,45,4,180,360,2);break;
+  case 'D':fc(64,44,9);fc(64,44,7,K);rr(52,34,25,10,0,K);fc(64,50,3);break;
+  case 'frown':arc(64,57,8,45,135,2);break;
+  case 'O':dc(64,50,5);dc(64,50,4);break;
+  case 'smallo':fc(64,50,3);break;
+  case 'wavy':for(let i=0;i<4;i++)ln(55+i*5,i%2?48:51,60+i*5,i%2?51:48,2);break;
+  case 'tongue':arc(64,40,9,225,315,2);fc(68,51,4);g.fillStyle=K;g.fillRect(68,48+yo,1,5);break;
+  case 'wail':rr(56,44,16,10,4);rr(58,46,12,6,2,K);break;
+  case 'puff':arc(64,56,5,50,130,2);break;}}
+function talkMouth(a){const h=3+Math.floor(a*12);rr(54,44,20,h,Math.min(Math.floor(h/2),5));if(h>7){rr(56,46,16,h-4,3,K);fc(64,44+h-4,3)}}
+
+/* st = {emo, blink, lookX, lookY, talking, talkAmp, t(ms)} */
+function drawFace(st){
+  g.fillStyle=K;g.fillRect(0,0,128,64);
+  const emo=st.emo,t=st.t;
+  yo=Math.floor(t/700)%2;
+  const lx=36,rx=92,ey=24,px=st.lookX,py=st.lookY,tw=Math.floor(t/300)%2===1;
+  const closed=['joy','sleepy','cry','silly','love','starry'].includes(emo);
+  doBlink=st.blink&&!closed;
+  let m='smile',bl=0;
+  switch(emo){
+    case'happy':gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);m='cat';bl=1;break;
+    case'excited':gl(lx,ey,14,10,px,py);gl(rx,ey,14,10,px,py);m='D';bl=1;if(tw){sparkle(6,8,3);sparkle(122,8,3)}else{sparkle(10,4,2);sparkle(118,4,2)}break;
+    case'love':heart(lx,ey,tw?6:5);heart(rx,ey,tw?6:5);fc(lx-5,ey-5,1,K);fc(rx-5,ey-5,1,K);m='cat';bl=2;if(tw)heart(114,8,2);break;
+    case'wink':gl(lx,ey,13,10,px,py);arc(rx,ey+4,10,30,150,3);m='smile';bl=1;break;
+    case'joy':arc(lx,ey+5,10,25,155,3);arc(rx,ey+5,10,25,155,3);m='D';bl=2;break;
+    case'silly':ln(lx-8,ey-8,lx+6,ey,3);ln(lx+6,ey,lx-8,ey+8,3);ln(rx+8,ey-8,rx-6,ey,3);ln(rx-6,ey,rx+8,ey+8,3);m='tongue';bl=1;break;
+    case'sleepy':arc(lx,ey-2,10,200,340,3);arc(rx,ey-2,10,200,340,3);g.fillStyle=W;g.font='bold 8px monospace';g.fillText('z',104,12+yo);g.fillText('Z',112,20+yo);fc(64,50,tw?3:2);m=null;bl=1;break;
+    case'sad':{gl(lx,ey+1,13,11,px,-3);gl(rx,ey+1,13,11,px,-3);ln(lx-12,ey-13,lx+8,ey-18,2);ln(rx-8,ey-18,rx+12,ey-13,2);const ty=Math.floor(t/200)%7;fc(lx+10,ey+18+ty,2);tri(lx+8,ey+17+ty,lx+12,ey+17+ty,lx+10,ey+11+ty);m='frown';break}
+    case'cry':{arc(lx,ey,10,200,340,3);arc(rx,ey,10,200,340,3);const h=8+Math.floor(t/100)%14;rr(lx-9,ey+6,3,h,1);rr(rx+6,ey+6,3,h,1);m='wail';bl=1;break}
+    case'pout':gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);tri(lx-14,ey-15,lx+14,ey-15,lx+14,ey-2,K);tri(rx-14,ey-15,rx+14,ey-15,rx-14,ey-2,K);dc(12,44,7);dc(116,44,7);ln(108,4,116,12,2);ln(116,4,108,12,2);m='puff';break;
+    case'surprised':gl(lx,ey,15,6,px,py);gl(rx,ey,15,6,px,py);arc(lx,ey-16,8,60,120,2);arc(rx,ey-16,8,60,120,2);m='O';break;
+    case'thinking':{gl(lx,ey,13,9,5,-4);gl(rx,ey,13,9,5,-4);ln(lx-10,ey-17,lx+8,ey-17,2);ln(rx-10,ey-17,rx+8,ey-21,2);const d=Math.floor(t/400)%4;for(let i=0;i<d;i++)fc(104+i*8,54,2);m='wavy';break}
+    case'listening':{gl(lx,ey,13,10,px,py);gl(rx,ey,13,10,px,py);const n=Math.floor(t/250)%4;for(let i=0;i<n;i++)arc(100,24,12+i*5,-40,40,2);m='smallo';bl=1;break}
+    case'shy':gl(lx,ey,13,9,-5,5);gl(rx,ey,13,9,-5,5);m='wavy';bl=2;break;
+    case'starry':star(lx,ey,14,5);star(rx,ey,14,5);if(tw){sparkle(8,10,3);sparkle(120,10,3)}m='D';bl=1;break;
+    case'curious':gl(lx,ey,12,9,px+3,py);gl(rx,ey,15,10,px+3,py);ln(rx-10,ey-19,rx+8,ey-23,2);g.fillStyle=W;g.font='bold 8px monospace';g.fillText('?',116,8+yo);m='cat';bl=1;break;
+  }
+  blush(bl);
+  if(st.talking&&emo!=='sleepy')talkMouth(st.talkAmp);else if(m)mouth(m);
+}
+/* threshold the offscreen canvas into lit OLED pixels on a target canvas */
+function present(cv,scale){
+  const c=cv.getContext('2d'),d=g.getImageData(0,0,128,64).data,cs=getComputedStyle(document.documentElement);
+  c.fillStyle=cs.getPropertyValue('--oled-bg').trim()||'#020807';c.fillRect(0,0,cv.width,cv.height);
+  c.fillStyle=cs.getPropertyValue('--oled').trim()||'#79e7ff';
+  const dot=scale>=4?scale-1:scale-.4;
+  for(let y=0;y<64;y++)for(let x=0;x<128;x++)if(d[(y*128+x)*4]>110)c.fillRect(x*scale,y*scale,dot,dot);
+}
+
+/* ---------- bot state ---------- */
+const S={mode:0,emo:'happy',blink:false,lookX:0,lookY:0,talking:false,talkAmp:0,busy:false,last:performance.now()};
+let nextBlink=0,blinkEnd=0,nextLook=0,hold=0;
+const oled=$('#oled');
+setInterval(()=>{
+  const now=performance.now();
+  if(!S.blink&&now>nextBlink){S.blink=true;blinkEnd=now+130;nextBlink=now+2500+Math.random()*2500}
+  if(S.blink&&now>blinkEnd)S.blink=false;
+  if(now>nextLook){S.lookX=Math.round(Math.random()*6-3);S.lookY=Math.round(Math.random()*4-2);nextLook=now+1500+Math.random()*2000}
+  if(hold&&now>hold){hold=0;S.emo='happy';S.last=now}
+  if(!hold&&!S.busy&&S.emo!=='sleepy'&&S.emo!=='listening'&&now-S.last>60000)S.emo='sleepy';
+  drawFace({...S,t:now});present(oled,5);
+  drawWave(now);
+},60);
+
+/* ---------- audio level strip ---------- */
+const wv=$('#wave'),wc=wv.getContext('2d');let waveMode='idle',waveAmp=0;const trace=new Array(128).fill(0);
+function drawWave(now){
+  let a=0;
+  if(waveMode==='mic')a=.25+.6*Math.abs(Math.sin(now/90)*Math.sin(now/230+1))*(.5+Math.random()*.5);
+  else if(waveMode==='spk')a=S.talkAmp;
+  else a=.03*Math.random();
+  trace.push(a);trace.shift();
+  const cs=getComputedStyle(document.documentElement);
+  wc.fillStyle=cs.getPropertyValue('--oled-bg').trim();wc.fillRect(0,0,640,56);
+  wc.fillStyle=cs.getPropertyValue('--oled').trim();
+  trace.forEach((v,i)=>{const h=Math.max(2,v*52);wc.fillRect(i*5,28-h/2,3,h)});
+  wc.fillStyle=cs.getPropertyValue('--muted').trim();wc.font='10px monospace';
+  wc.fillText(waveMode==='mic'?'MIC IN':waveMode==='spk'?'SPEAKER OUT':'quiet',4,10);
+}
+
+/* ---------- pipeline strip ---------- */
+const STAGES=[['mic','INMP441','GPIO33'],['vad','Voice detect','ESP32'],['up','WiFi up','raw audio'],['stt','Whisper','speech to text'],['llm','Claude','emotion + reply'],['tts','edge-tts','cute voice'],['down','WiFi down','raw audio'],['amp','MAX98357A','GPIO22 + speaker'],['oled','OLED','face']];
+$('#pipe').innerHTML=STAGES.map(s=>`<div class="stage" id="st-${s[0]}">${s[1]}<small>${s[2]}</small></div>`).join('');
+function stage(id,on){const e=$('#st-'+id);if(!e)return;e.classList.toggle('on',on);if(!on)e.classList.add('done')}
+function clearStages(){document.querySelectorAll('.stage').forEach(e=>e.classList.remove('on','done'))}
+
+/* ---------- serial log ---------- */
+const logEl=$('#log');
+function log(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent=msg;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight}
+
+/* ---------- mock brain (stands in for server.py) ---------- */
+const RULES=[
+  [/angry|mad|furious|grumpy/,'pout','Hmph! I am not grumpy. Okay, maybe a little.'],
+  [/cry|rough|bad day|lonely/,'sad','I am here with you. Do you want to tell me more?'],
+  [/anxious|worried|stress|scared/,'shy','Breathe in slowly. I will stay right here.'],
+  [/job|won|passed|got it|promotion/,'excited','No way! That is amazing! I am so proud of you!'],
+  [/love|thank|best friend/,'love','Aww, you are my favourite human in the whole world!'],
+  [/goodnight|good night|tired|sleep/,'sleepy','Sweet dreams. Lights out in three, two, one.'],
+  [/morning/,'happy','Good morning! Let us make today a good one.'],
+  [/focus|distract/,'thinking','Try twenty five minutes of focus, then a five minute break.'],
+  [/quiz/,'curious','Here is one. What does I two C stand for?'],
+  [/study|tip|exam/,'thinking','Explain it to me in one sentence. The gaps will show.'],
+  [/joke|funny/,'silly','Why did the robot go to school? To improve its byte!'],
+  [/who are you|your name/,'wink','I am Pip, a tiny robot with big feelings.'],
+  [/wow|amazing|cool|awesome/,'starry','Ooh, sparkly! Tell me more!'],
+  [/fact/,'surprised','Octopuses have three hearts. Is that not wild?'],
+  [/hello|hi pip|hey/,'happy','Hi hi! I am so happy you are here!']
+];
+const FALLBACK=[['happy','Ask me anything. I am all ears!'],['thinking','Good question. Let us break it into small parts.'],['love','Tell me more. I am listening.'],['sleepy','Mmm. Soft thoughts only now.']];
+function brain(q){
+  const s=q.toLowerCase();
+  const mm=s.match(/\b(buddy|study|mood|sleep) mode\b/);
+  if(mm){S.mode=['buddy','study','mood','sleep'].indexOf(mm[1]);refreshUI();return{emotion:'excited',text:'Okay! '+MODES[S.mode]+' mode on.'}}
+  for(const [re,e,t] of RULES)if(re.test(s))return{emotion:e,text:t};
+  const f=FALLBACK[S.mode];return{emotion:f[0],text:f[1]};
+}
+
+/* ---------- the full talk path ---------- */
+async function converse(text){
+  if(S.busy||!text.trim())return;
+  S.busy=true;$('#talk').disabled=true;hold=0;S.last=performance.now();clearStages();
+  const ms=Math.min(3500,800+text.length*55);
+  log('> '+text,'me');
+  S.emo='listening';waveMode='mic';$('#ledmic').classList.add('on');stage('mic',true);stage('vad',true);
+  log('speech detected, recording...','t');
+  await sleep(ms);
+  $('#ledmic').classList.remove('on');waveMode='idle';stage('mic',false);stage('vad',false);
+  const bytes=Math.round(ms*32);
+  stage('up',true);log('POST /talk (chunked) '+bytes+' bytes of 16 kHz audio','t');await sleep(350);stage('up',false);
+  S.emo='thinking';
+  stage('stt',true);await sleep(700);stage('stt',false);log('heard: "'+text+'"','t');
+  stage('llm',true);const r=brain(text);await sleep(900);stage('llm',false);log(JSON.stringify(r),'t');
+  stage('tts',true);await sleep(700);stage('tts',false);
+  stage('down',true);await sleep(300);stage('down',false);
+  log('HTTP 200  X-Emotion: '+r.emotion,'ok');
+  const dur=Math.max(1200,r.text.length*62);
+  S.emo=r.emotion;S.talking=true;waveMode='spk';$('#ledspk').classList.add('on');stage('amp',true);stage('oled',true);
+  log('playing reply: "'+r.text+'"','ok');
+  if($('#tts').checked){try{const u=new SpeechSynthesisUtterance(r.text);u.pitch=1.8;u.rate=1.05;speechSynthesis.cancel();speechSynthesis.speak(u)}catch(e){}}
+  const t0=performance.now();
+  while(performance.now()-t0<dur){S.talkAmp=Math.max(0,Math.min(1,.15+.75*Math.abs(Math.sin(performance.now()/110)*Math.cos(performance.now()/290))));await sleep(50)}
+  S.talking=false;S.talkAmp=0;waveMode='idle';$('#ledspk').classList.remove('on');stage('amp',false);stage('oled',false);
+  hold=performance.now()+4000;S.last=performance.now();
+  S.busy=false;$('#talk').disabled=false;
+}
+$('#f').onsubmit=e=>{e.preventDefault();converse($('#q').value)};
+
+/* ---------- mode + quick phrases ---------- */
+const QUICK=[['Tell me a fun fact','Tell me a joke','You look angry!','I got the job!'],['Give me a study tip','I cannot focus','Quiz me'],['I had a rough day','I love you Pip','I feel anxious'],['Say goodnight','I am so tired','Good morning']];
+function refreshUI(){
+  [...$('#modes').children].forEach((b,i)=>b.setAttribute('aria-pressed',i===S.mode));
+  const q=$('#quick');q.innerHTML='';
+  QUICK[S.mode].forEach(t=>{const b=document.createElement('button');b.className='chip';b.textContent=t;b.onclick=()=>{$('#q').value=t;converse(t)};q.appendChild(b)});
+}
+MODES.forEach((n,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=n;b.onclick=()=>{S.mode=i;S.emo=i===3?'sleepy':i===1?'thinking':'happy';S.last=performance.now();log('mode -> '+n,'t');refreshUI()};$('#modes').appendChild(b)});
+refreshUI();
+log('Connecting WiFi...','t');
+setTimeout(()=>{$('#ledwifi').classList.add('on');log('ESP32 IP: 192.168.1.60','ok');log('Noise floor 62, speech threshold 187','t');log('Server: http://192.168.1.50:8000','t')},1000);
+
+/* ---------- emotion gallery ---------- */
+const galCards=[];
+EMOS.forEach(e=>{
+  const d=document.createElement('div');d.className='card';
+  d.innerHTML=`<div class="bezel"><canvas width="256" height="128"></canvas></div><h3>${e}</h3><p>${EMO_INFO[e]}</p>`;
+  $('#gal').appendChild(d);galCards.push([e,d.querySelector('canvas')]);
+});
+setInterval(()=>{ if($('#p-emo').hidden)return; const t=performance.now();
+  galCards.forEach(([e,cv])=>{drawFace({emo:e,blink:false,lookX:0,lookY:0,talking:false,talkAmp:0,t});present(cv,2)});
+},250);
+
+/* ---------- wiring diagram ---------- */
+(function(){
+  const NS='http://www.w3.org/2000/svg',svg=$('#wsvg');let h='';
+  const box=(x,y,w,hh,title,sub)=>`<rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="8" fill="var(--panel)" stroke="var(--ink)" stroke-width="2"/><text x="${x+12}" y="${y+22}" style="font-weight:500">${title}</text>${sub?`<text x="${x+12}" y="${y+hh-12}" class="dim">${sub}</text>`:''}`;
+  h+=box(30,20,160,610,'ESP32 DevKitC','USB powers everything');
+  h+=box(560,20,200,230,'INMP441 mic','I2S microphone');
+  h+=box(560,275,200,190,'MAX98357A amp','I2S amplifier');
+  h+=box(560,470,200,160,'OLED 128x64','I2C, address 0x3C');
+  h+=box(810,310,80,100,'Speaker','');
+  const esp={'3V3':50,'5V':90,'GND':130,'GPIO14':180,'GPIO25':225,'GPIO33':270,'GPIO22':315,'GPIO21':360,'GPIO19':405};
+  const mic={VDD:55,GND:85,'L/R':115,SD:145,WS:175,SCK:205};
+  const amp={VIN:305,GND:335,DIN:365,BCLK:395,LRC:425};
+  const oled={VDD:500,GND:530,SDA:560,SCK:590};
+  const pins=(x,anchor,o)=>Object.entries(o).map(([n,y])=>`<circle cx="${x}" cy="${y}" r="4" fill="var(--ink)"/><text x="${anchor==='end'?x-10:x+10}" y="${y+4}" text-anchor="${anchor}" class="dim">${n}</text>`).join('');
+  h+=pins(190,'end',esp)+pins(560,'start',mic)+pins(560,'start',amp)+pins(560,'start',oled);
+  // pin labels for the parts sit inside the boxes, so move them right of the pin dot
+  const nets=[
+    ['3V3','#e5484d',esp['3V3'],215,[mic.VDD,oled.VDD]],
+    ['5V','#f97316',esp['5V'],235,[amp.VIN]],
+    ['GND','#7a8a83',esp.GND,255,[mic.GND,mic['L/R'],amp.GND,oled.GND]],
+    ['BCLK','#a855f7',esp.GPIO14,285,[mic.SCK,amp.BCLK]],
+    ['WS','#06b6d4',esp.GPIO25,305,[mic.WS,amp.LRC]],
+    ['MIC','#22a06b',esp.GPIO33,325,[mic.SD]],
+    ['SPK','#eab308',esp.GPIO22,345,[amp.DIN]],
+    ['SDA','#3b82f6',esp.GPIO21,365,[oled.SDA]],
+    ['SCL','#ec4899',esp.GPIO19,385,[oled.SCK]]
+  ];
+  nets.forEach(([n,c,y0,x,ys])=>{
+    const all=[y0,...ys],lo=Math.min(...all),hi=Math.max(...all);
+    h+=`<path class="wire" stroke="${c}" d="M190 ${y0}H${x}M${x} ${lo}V${hi}${ys.map(y=>`M${x} ${y}H560`).join('')}"/>`;
+    h+=ys.map(y=>`<circle cx="${x}" cy="${y}" r="3" fill="${c}"/>`).join('');
+  });
+  // speaker
+  h+=`<circle cx="760" cy="335" r="4" fill="var(--ink)"/><text x="715" y="318" class="dim">VO+</text><circle cx="760" cy="385" r="4" fill="var(--ink)"/><text x="715" y="378" class="dim">VO−</text>`;
+  h+=`<path class="wire" stroke="#f97316" d="M760 335H810"/><path class="wire" stroke="#7a8a83" d="M760 385H810"/>`;
+  h+=`<text x="816" y="345" class="dim">+</text><text x="816" y="395" class="dim">−</text>`;
+  h+=`<text x="580" y="262" class="dim">L/R tied to GND = left channel</text>`;
+  svg.innerHTML=h;
+})();
+
+/* ---------- build steps ---------- */
+const PHASES=[
+ {t:'Phase 0 · Before you start',s:'about 10 min',items:[
+  ['Gather the parts','ESP32 DevKitC, INMP441 mic, MAX98357A amp, 4 to 8 ohm speaker, 0.96" I2C OLED, breadboard, jumper wires, a USB data cable (not a charge-only one).'],
+  ['Open the Wiring tab on a second screen','You will check it after every wire group.'],
+  ['Decide where the brain runs','The server runs on your laptop. The laptop and the ESP32 must be on the same WiFi. A phone hotspot is the safest choice at a hackathon.']]},
+ {t:'Phase 1 · Arduino IDE',s:'about 15 min',items:[
+  ['Install Arduino IDE 2.x','Download from arduino.cc/en/software and install it. Open it once.'],
+  ['Add the ESP32 board URL','File &gt; Preferences &gt; "Additional boards manager URLs", paste:<pre>https://espressif.github.io/arduino-esp32/package_esp32_index.json</pre>Click OK.'],
+  ['Install the ESP32 boards','Tools &gt; Board &gt; Boards Manager. Search <b>esp32</b>. Install "esp32 by Espressif Systems", version <b>3.x</b>. It is a big download, wait for it.'],
+  ['Install the USB driver if needed','Look at the small chip near the USB port: CP2102 or CH340. Install that driver, then plug the ESP32 in.'],
+  ['Install two libraries','Sketch &gt; Include Library &gt; Manage Libraries. Install <b>Adafruit SSD1306</b> (choose "Install all" for dependencies) and <b>Adafruit GFX Library</b>.'],
+  ['Select the board and port','Tools &gt; Board &gt; esp32 &gt; <b>ESP32 Dev Module</b>. Tools &gt; Port &gt; the new COM or /dev/tty port.'],
+  ['Test the toolchain','File &gt; Examples &gt; 01.Basics &gt; Blink. Upload. If the onboard LED blinks, your computer, cable and board are fine. If it says "Connecting...", hold the BOOT button on the board.']]},
+ {t:'Phase 2 · OLED face',s:'about 10 min',items:[
+  ['Wire the OLED only','VDD to 3V3, GND to GND, SCK to GPIO19, SDA to GPIO21. Unplug USB while wiring.'],
+  ['Open the main firmware','Code tab &gt; "ai_bot.ino" &gt; Copy. In Arduino IDE, File &gt; New Sketch, select all, paste, save as <code>ai_bot</code>.'],
+  ['Turn on face-test mode','Near the top change <code>#define FACE_TEST_ONLY 0</code> to <code>1</code>. This skips WiFi and audio.'],
+  ['Upload','Click Upload. The OLED should show a star-eyed face, then cycle through all 16 emotions every 2.5 seconds.'],
+  ['Try the serial keys','Tools &gt; Serial Monitor, 115200 baud. Press <code>n</code> next face, <code>p</code> previous, <code>k</code> talking mouth, then Enter.'],
+  ['Screen stays black?','Swap SDA and SCL, check 3V3 and GND, and make sure the OLED address is 0x3C (the sketch uses <code>OLED_ADDR</code>).']]},
+ {t:'Phase 3 · Microphone',s:'about 10 min',items:[
+  ['Add the microphone wires','INMP441: VDD to 3V3, GND to GND, <b>L/R to GND</b>, SCK to GPIO14, WS to GPIO25, SD to GPIO33.'],
+  ['Open the mic test','Code tab &gt; "test_mic.ino". Paste into a new sketch and upload.'],
+  ['Check the levels','Serial Monitor at 115200. Stay quiet: the bar should be short. Clap or talk: the bar should grow. If it is always 0 or always full, recheck SD and L/R.'],
+  ['Too quiet or too loud?','Later you can change <code>MIC_SHIFT</code> in the main firmware: 13 is louder, 15 is quieter.']]},
+ {t:'Phase 4 · Speaker',s:'about 10 min',items:[
+  ['Add the amplifier wires','MAX98357A: VIN to 5V, GND to GND, BCLK to GPIO14, LRC to GPIO25, DIN to GPIO22. Leave SD and GAIN unconnected.'],
+  ['Connect the speaker','Speaker + to VO+, speaker − to VO−. Never connect either speaker wire to GND.'],
+  ['Open the speaker test','Code tab &gt; "test_speaker.ino". Paste into a new sketch and upload.'],
+  ['Listen','You should hear a soft beep-boop every 2 seconds. If nothing: check 5V and the DIN wire. If it is distorted, lower <code>VOLUME</code>.']]},
+ {t:'Phase 5 · The brain on your laptop',s:'about 20 min',items:[
+  ['Install Python 3.10 or newer','From python.org. On Windows tick "Add Python to PATH".'],
+  ['Install ffmpeg','Windows: <code>winget install ffmpeg</code>. Mac: <code>brew install ffmpeg</code>. Linux: <code>sudo apt install ffmpeg</code>. Check with <code>ffmpeg -version</code>.'],
+  ['Get the server files','Copy the <code>server</code> folder from the repo (files: <code>server.py</code>, <code>requirements.txt</code>) onto your laptop.'],
+  ['Create a virtual environment','In a terminal inside the folder:<pre>python -m venv .venv\n# Windows:  .venv\\Scripts\\activate\n# Mac/Linux: source .venv/bin/activate</pre>'],
+  ['Install the packages','<pre>pip install -r requirements.txt</pre>'],
+  ['Get an Anthropic API key','Create one in the Anthropic Console and set a small spend limit.'],
+  ['Set the key','Windows PowerShell: <code>$env:ANTHROPIC_API_KEY="sk-ant-..."</code>. Mac/Linux: <code>export ANTHROPIC_API_KEY=sk-ant-...</code>'],
+  ['Start the server','<pre>python server.py</pre>The first run downloads the speech model (about 150 MB).'],
+  ['Test it with no hardware','Open <code>http://localhost:8000</code>, type "hello", press Send. You should hear Pip answer. If you do, the whole brain works.'],
+  ['Find your laptop IP','Windows: <code>ipconfig</code>. Mac/Linux: <code>ifconfig</code> or <code>ip a</code>. Look for the 192.168.x.x or 10.x.x.x address on your WiFi.'],
+  ['Allow the port','Allow Python through the firewall on private networks, or allow port 8000.']]},
+ {t:'Phase 6 · Put it all together',s:'about 15 min',items:[
+  ['Turn face-test mode off','In <code>ai_bot.ino</code> set <code>#define FACE_TEST_ONLY 0</code>.'],
+  ['Fill in the config','Set <code>WIFI_SSID</code>, <code>WIFI_PASS</code> (2.4 GHz only) and <code>SERVER_HOST</code> (your laptop IP from phase 5).'],
+  ['Upload the firmware','Click Upload. Open the Serial Monitor.'],
+  ['Watch the boot','You should see the ESP32 IP, then "Noise floor ... speech threshold ...". Stay quiet during the 1 second calibration.'],
+  ['Say hello','Speak a short sentence. The face turns to listening, then thinking, then the speaker answers and the face matches the reply.'],
+  ['Switch modes','Say "study mode", "mood mode", "sleep mode" or "buddy mode". Or press 1 to 4 in the Serial Monitor.'],
+  ['Tune it','Mic not triggering: lower <code>MIC_SHIFT</code> by 1. Too loud speaker: lower <code>SPEAKER_VOLUME</code>. Picks up noise: stay closer to the mic.']]},
+ {t:'Phase 7 · Demo day',s:'last',items:[
+  ['Use a phone hotspot','Connect both laptop and ESP32 to it. Update <code>WIFI_SSID</code>, <code>WIFI_PASS</code> and <code>SERVER_HOST</code> once.'],
+  ['Pre-test your lines','Run your 5 demo questions twice so the speech model is warm.'],
+  ['Keep the server page open','<code>http://localhost:8000</code> shows the conversation log for judges, and doubles as a no-hardware backup.'],
+  ['Mount it','Cardboard or a 3D-printed case, speaker facing out, mic hole not covered, OLED visible.']]}
+];
+let saved={};try{saved=JSON.parse(localStorage.getItem('pipSteps2')||'{}')}catch(e){}
+(function(){
+  let n=0,html='';const host=$('#phases');
+  PHASES.forEach((p,pi)=>{
+    const sec=document.createElement('div');
+    sec.innerHTML=`<div class="phase"><h3 style="font-size:19px">${p.t}</h3><span>${p.s}</span></div>`;
+    const ol=document.createElement('ol');ol.className='steps';
+    p.items.forEach(it=>{
+      const id='s'+(n++);const li=document.createElement('li');
+      li.innerHTML=`<input type="checkbox" id="${id}" aria-label="Done: ${it[0]}"><div><h3>${it[0]}</h3><p>${it[1]}</p></div>`;
+      const cb=li.querySelector('input');cb.checked=!!saved[id];li.classList.toggle('done',cb.checked);
+      cb.onchange=()=>{saved[id]=cb.checked;li.classList.toggle('done',cb.checked);try{localStorage.setItem('pipSteps2',JSON.stringify(saved))}catch(e){}};
+      ol.appendChild(li);
+    });
+    sec.appendChild(ol);host.appendChild(sec);
+  });
+})();
+const TROUBLE=[
+ ['Upload fails: "Failed to connect to ESP32"','Hold the BOOT button while the IDE says "Connecting...", release when it starts writing. Try another USB cable.'],
+ ['Compile error: ESP_I2S.h not found','You have ESP32 core 2.x. Update "esp32 by Espressif Systems" to 3.x in Boards Manager.'],
+ ['Serial shows "Cannot reach server"','Wrong <code>SERVER_HOST</code>, laptop on a different WiFi, server not running, or the firewall blocks port 8000. Test from your phone: <code>http://LAPTOP-IP:8000</code>.'],
+ ['It never wakes up when I talk','Open the mic test and watch the level. Lower <code>MIC_SHIFT</code> by 1 or 2. Restart the ESP32 and stay quiet during calibration.'],
+ ['It wakes up all the time','Raise <code>MIC_SHIFT</code> by 1, move away from fans and loud speakers, restart for a fresh calibration.'],
+ ['Server says heard: \'\' (empty)','The audio was too quiet or too short. Speak closer, or lower <code>MIC_SHIFT</code>. Try <code>WHISPER_MODEL=small.en</code>.'],
+ ['Speaker is silent in the full firmware but works in the test','Check <code>SERVER_HOST</code>, and that ffmpeg is installed (<code>ffmpeg -version</code>). The server console prints any ffmpeg error.'],
+ ['Speaker crackles or is too loud','Lower <code>SPEAKER_VOLUME</code>. Make sure the speaker is wired to VO+ and VO−, not GND.'],
+ ['Answers are slow','Use <code>WHISPER_MODEL=tiny.en</code>, keep replies short, and run the server on a laptop plugged into power.']
+];
+$('#trouble').innerHTML=TROUBLE.map(t=>`<details><summary>${t[0]}</summary><p>${t[1]}</p></details>`).join('');
+
+/* ---------- code viewer ---------- */
+const FILES=[['ai_bot.ino','f-main','firmware/ai_bot/ai_bot.ino','ESP32 firmware (main sketch)'],['test_mic.ino','f-mic','firmware/test_mic/test_mic.ino','Test sketch for the microphone'],['test_speaker.ino','f-spk','firmware/test_speaker/test_speaker.ino','Test sketch for the speaker'],['server.py','f-server','server/server.py','Laptop server: speech to text, LLM, text to speech'],['requirements.txt','f-req','server/requirements.txt','Python packages for the server']];
+let cur=0;
+function showFile(i){cur=i;$('#src').textContent=$('#'+FILES[i][1]).content.textContent;$('#where').textContent=FILES[i][2]+'  ·  '+FILES[i][3];[...$('#files').children].forEach((b,j)=>b.setAttribute('aria-pressed',j===i));$('#copied').textContent=''}
+FILES.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f[0];b.onclick=()=>showFile(i);$('#files').appendChild(b)});
+showFile(0);
+$('#copy').onclick=async()=>{
+  const t=$('#src').textContent;
+  try{await navigator.clipboard.writeText(t);$('#copied').textContent='Copied.'}
+  catch(e){const r=document.createRange();r.selectNodeContents($('#src'));const s=getSelection();s.removeAllRanges();s.addRange(r);$('#copied').textContent='Selected. Press Ctrl+C.'}
+};
+</script>
