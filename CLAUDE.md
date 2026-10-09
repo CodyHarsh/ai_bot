@@ -22,8 +22,12 @@ Dashboard: http://localhost:8000/dashboard. Handy endpoints: `/api/laptop-test`,
 
 ## Status
 - Works: mic test with transcription, server, LLM chain, laptop voice, 16 emotion faces, dashboard.
+- Push to talk: hold BOOT (or key `r`) -> OLED "SPEAK NOW" + beep from the laptop (`/api/ding`) -> record -> release. Speed: Whisper is warmed up at start, end-of-speech wait is 0.5 s (`SILENCE_FRAMES 25`).
 - Open problem: in the full bot the idle mic level is bursty and as loud as speech (looks like OLED refresh or WiFi interference on the mic line), so voice-triggered recording is unreliable. The mic test sketch does not have this. Workarounds built: median-of-5 level, BOOT-button push to talk, key `r` (4 s), manual threshold (`VOICE_THRESHOLD`, keys `>` `<`), OLED refresh 4 Hz.
 - Next ideas: confirm push to talk gives `>>> I HEARD YOU SAY`; hardware fixes (100 nF cap at mic VDD, short wires away from OLED); an optional voice-to-voice mode (Gemini Live or OpenAI Realtime) behind `PIPELINE=live` in the server, leaving the firmware unchanged.
+
+## How to continue in a new chat
+Paste this file (or run Claude Code in the repo, it is read automatically) and say where you are, e.g. "mic test works; testing push to talk in the main bot". Keep the latest `ai_bot.ino` and `server.py` from the branch `claude/peaceful-allen-18ncek` of CodyHarsh/ai_bot.
 
 ## Gotchas
 - Arduino IDE: custom enums/structs must be declared above all functions (it auto-generates prototypes).
